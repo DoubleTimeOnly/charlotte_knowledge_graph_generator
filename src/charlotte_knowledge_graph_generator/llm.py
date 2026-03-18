@@ -23,9 +23,11 @@ from charlotte_knowledge_graph_generator.models import (
     GraphResponse,
     NodeDetail,
     NodeType,
+    SearchResult,
     SubGraphResponse,
     _LLMEdgeInput,
     _LLMEdgeListOutput,
+    _LLMEnrichedNodeInput,
     _LLMGraphInput,
     _LLMNodeDetailInput,
     _LLMNodeInput,
@@ -43,11 +45,13 @@ from charlotte_knowledge_graph_generator.prompts import (
     EXPAND_USER,
     NODE_DETAIL_SYSTEM,
     NODE_DETAIL_USER,
+    QUERY_GEN_SYSTEM,
     SURVEY_SYSTEM,
     SURVEY_USER,
     VALIDATE_SYSTEM,
     VALIDATE_USER,
 )
+from charlotte_knowledge_graph_generator.search import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -65,24 +69,42 @@ def _canonical_id(label: str) -> str:
     return label.lower().strip().replace(" ", "_").replace("-", "_")
 
 
-def _process_llm_graph(raw: _LLMGraphInput, topic: str) -> GraphResponse:
-    """Convert LLM tool output (label-based) to a validated GraphResponse (ID-based).
+def _resolve_source_urls(indices: list[int], results: list[SearchResult]) -> list[str]:
+    """Map 1-based source_indices to validated URLs. Silently skips out-of-range or non-http(s) indices."""
+    urls: list[str] = []
+    for i in indices:
+        if 1 <= i <= len(results):
+            url = results[i - 1].url
+            if url.startswith(("http://", "https://")):
+                urls.append(url)
+    return urls
 
-    LLM tool input flow:
-      _LLMGraphInput (labels) ──► deduplicate nodes ──► build label→id map
-                                ──► convert edge labels to IDs ──► GraphResponse
+
+def _process_llm_nodes(
+    raw_nodes: list[_LLMNodeInput],
+    search_results: list[SearchResult] | None = None,
+) -> tuple[list[GraphNode], dict[str, str]]:
+    """Deduplicate nodes and build label→id map.
+
+    If raw_nodes are _LLMEnrichedNodeInput, resolves source_indices → source_urls.
+    Returns (nodes, label_to_id).
     """
+    if search_results is None:
+        search_results = []
     seen_ids: set[str] = set()
     nodes: list[GraphNode] = []
     label_to_id: dict[str, str] = {}
 
-    for n in raw.nodes:
+    for n in raw_nodes:
         node_id = _canonical_id(n.label)
         if node_id in seen_ids:
             logger.warning("Duplicate node label from LLM: %s — skipping", n.label)
             continue
         seen_ids.add(node_id)
         label_to_id[n.label.lower().strip()] = node_id
+        source_urls = _resolve_source_urls(
+            getattr(n, "source_indices", []), search_results
+        )
         nodes.append(
             GraphNode(
                 id=node_id,
@@ -90,8 +112,25 @@ def _process_llm_graph(raw: _LLMGraphInput, topic: str) -> GraphResponse:
                 type=n.type,
                 description=n.description,
                 era=n.era,
+                source_urls=source_urls,
             )
         )
+
+    return nodes, label_to_id
+
+
+def _process_llm_graph(
+    raw: _LLMGraphInput,
+    topic: str,
+    search_results: list[SearchResult] | None = None,
+) -> GraphResponse:
+    """Convert LLM tool output (label-based) to a validated GraphResponse (ID-based).
+
+    LLM tool input flow:
+      _LLMGraphInput (labels) ──► deduplicate nodes ──► build label→id map
+                                ──► convert edge labels to IDs ──► GraphResponse
+    """
+    nodes, label_to_id = _process_llm_nodes(raw.nodes, search_results)
 
     edges = []
     for e in raw.edges:
@@ -116,25 +155,7 @@ def _process_llm_graph(raw: _LLMGraphInput, topic: str) -> GraphResponse:
 
 def _process_llm_subgraph(raw: _LLMSubGraphInput) -> SubGraphResponse:
     """Convert LLM expansion output to a SubGraphResponse."""
-    seen_ids: set[str] = set()
-    nodes: list[GraphNode] = []
-    label_to_id: dict[str, str] = {}
-
-    for n in raw.nodes:
-        node_id = _canonical_id(n.label)
-        if node_id in seen_ids:
-            continue
-        seen_ids.add(node_id)
-        label_to_id[n.label.lower().strip()] = node_id
-        nodes.append(
-            GraphNode(
-                id=node_id,
-                label=n.label,
-                type=n.type,
-                description=n.description,
-                era=n.era,
-            )
-        )
+    nodes, label_to_id = _process_llm_nodes(raw.nodes)
 
     edges = []
     for e in raw.edges:
@@ -156,7 +177,11 @@ def _process_llm_subgraph(raw: _LLMSubGraphInput) -> SubGraphResponse:
 
 @runtime_checkable
 class LLMClientProtocol(Protocol):
-    async def generate_graph(self, topic: str, depth: int) -> GraphResponse: ...
+    async def generate_graph(
+        self, topic: str, depth: int, search_context: list[SearchResult] | None = None
+    ) -> GraphResponse: ...
+
+    async def generate_search_queries(self, topic: str) -> list[str]: ...
 
     async def expand_node(
         self,
@@ -192,21 +217,52 @@ class AnthropicLLMClient:
         self._client = client
         self._model = model
 
-    async def generate_graph(self, topic: str, depth: int) -> GraphResponse:
+    async def generate_search_queries(self, topic: str) -> list[str]:
+        """Fast non-tool Claude call to generate 2-3 search queries for the topic."""
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=150,
+            system=QUERY_GEN_SYSTEM,
+            messages=[{"role": "user", "content": topic}],
+        )
+        text = response.content[0].text.strip() if response.content else ""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[:3] if lines else [topic]
+
+    async def generate_graph(
+        self,
+        topic: str,
+        depth: int,
+        search_context: list[SearchResult] | None = None,
+    ) -> GraphResponse:
         """4-stage pipeline: SURVEY → EDGES → VALIDATE → ENRICH."""
-        nodes = await self._survey_entities(topic)
+        if search_context is None:
+            search_context = []
+        nodes = await self._survey_entities(topic, search_context)
         edges = await self._construct_edges(topic, nodes)
         issues = await self._validate_graph(nodes, edges)
-        return await self._enrich_graph(topic, nodes, edges, issues)
+        return await self._enrich_graph(topic, nodes, edges, issues, search_context)
 
-    async def _survey_entities(self, topic: str) -> list[_LLMNodeInput]:
-        """Stage 1: identify ~25-30 causal entities."""
+    async def _survey_entities(
+        self, topic: str, search_context: list[SearchResult] | None = None
+    ) -> list[_LLMNodeInput]:
+        """Stage 1: identify ~25-30 causal entities, grounded by search context."""
+        from charlotte_knowledge_graph_generator.search import SearchService
+
+        formatted_context = SearchService.format_context(search_context or [])
         schema = _LLMSurveyOutput.model_json_schema()
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
             system=SURVEY_SYSTEM,
-            messages=[{"role": "user", "content": SURVEY_USER.format(topic=topic)}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": SURVEY_USER.format(
+                        topic=topic, search_context=formatted_context
+                    ),
+                }
+            ],
             tools=[
                 {
                     "name": "create_node_list",
@@ -315,8 +371,12 @@ class AnthropicLLMClient:
         nodes: list[_LLMNodeInput],
         edges: list[_LLMEdgeInput],
         issues: list[_LLMValidationIssue],
+        search_context: list[SearchResult] | None = None,
     ) -> GraphResponse:
-        """Stage 4: apply validation fixes and produce final GraphResponse."""
+        """Stage 4: apply validation fixes and produce final GraphResponse with source attribution."""
+        from charlotte_knowledge_graph_generator.search import SearchService
+
+        formatted_context = SearchService.format_context(search_context or [])
         json_graph = json.dumps(
             {
                 "nodes": [
@@ -359,6 +419,7 @@ class AnthropicLLMClient:
                     "content": ENRICH_USER.format(
                         json_graph=json_graph,
                         validation_issues=validation_issues,
+                        search_context=formatted_context,
                     ),
                 }
             ],
@@ -379,7 +440,7 @@ class AnthropicLLMClient:
         logger.info(
             "ENRICH: final graph has %d nodes, %d edges", len(raw.nodes), len(raw.edges)
         )
-        return _process_llm_graph(raw, topic)
+        return _process_llm_graph(raw, topic, search_context or [])
 
     async def expand_node(
         self,

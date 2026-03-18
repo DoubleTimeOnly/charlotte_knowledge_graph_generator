@@ -27,7 +27,9 @@ from charlotte_knowledge_graph_generator.models import (
     NodeDetail,
     NodeDetailRequest,
 )
+from charlotte_knowledge_graph_generator.search import SearchService
 
+logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
@@ -47,7 +49,18 @@ async def lifespan(app: FastAPI):
         client=anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key),
         model=settings.anthropic_model,
     )
-    service = GraphService(llm=llm_client, cache=cache, settings=settings)
+
+    search_service: SearchService | None = None
+    if settings.tavily_api_key:
+        search_service = SearchService(
+            api_key=settings.tavily_api_key,
+            max_results=settings.search_max_results_per_query,
+        )
+        logger.info("Tavily search enabled (max_results=%d)", settings.search_max_results_per_query)
+    else:
+        logger.info("Tavily search disabled — TAVILY_API_KEY not set, running LLM-only mode")
+
+    service = GraphService(llm=llm_client, cache=cache, settings=settings, search=search_service)
 
     app.state.cache = cache
     app.state.service = service
@@ -93,6 +106,11 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+async def get_config() -> dict:
+    return {"search_enabled": settings.tavily_api_key is not None}
+
+
 @app.get("/admin/cache/stats")
 async def cache_stats(request: Request) -> dict:
     return await request.app.state.cache.stats()
@@ -106,7 +124,7 @@ async def generate_graph(
     service: GraphService = Depends(get_service),
 ) -> GraphResponse:
     try:
-        return await service.generate_graph(body.topic, body.depth)
+        return await service.generate_graph(body.topic, body.depth, force_refresh=body.force_refresh)
     except LLMRefusalError as exc:
         logger.info("LLM refused topic=%r: %s", body.topic, exc)
         raise HTTPException(status_code=422, detail="Topic not supported or too sensitive for graph generation")

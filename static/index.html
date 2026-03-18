@@ -35,6 +35,10 @@
       <button class="chip" data-topic="Closing the Strait of Hormuz">Closing the Strait of Hormuz</button>
       <button class="chip" data-topic="Attention Is All You Need">Attention Is All You Need</button>
     </div>
+    <div id="home-search-status" class="home-search-status" hidden>
+      <span class="search-status-dot"></span>
+      <span class="search-status-label"></span>
+    </div>
   </div>
 </div>
 
@@ -66,6 +70,10 @@
       </div>
     </div>
     <div class="top-right">
+      <span id="top-search-status" class="top-search-status" hidden>
+        <span class="search-status-dot"></span>
+        <span class="search-status-label"></span>
+      </span>
       <button id="theme-toggle" aria-label="Toggle theme">☽</button>
       <div class="legend" role="list" aria-label="Node type legend">
         <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Person" style="background:var(--color-person)"></span>Person</span>
@@ -81,6 +89,12 @@
       </div>
     </div>
   </header>
+
+  <!-- Info bar: timestamp + regenerate (hidden until graph renders) -->
+  <div id="graph-info-bar" hidden role="status" aria-live="polite">
+    <span id="graph-timestamp" class="graph-timestamp"></span>
+    <button id="regen-btn" class="btn-ghost btn-sm" aria-label="Regenerate graph">↺ Regenerate</button>
+  </div>
 
   <!-- Main split layout -->
   <main id="main-content">
@@ -146,9 +160,9 @@
           <ul id="connections-list" class="connections-list"></ul>
         </section>
 
-        <section id="panel-sources" hidden>
-          <span class="section-label">Sources: </span>
-          <span id="sources-text" class="sources-text"></span>
+        <section id="panel-sources" hidden aria-label="Sources">
+          <h3 class="section-label">SOURCES</h3>
+          <ul id="sources-list" class="sources-list"></ul>
         </section>
 
         <button id="expand-btn" class="btn-expand">→ Expand node</button>

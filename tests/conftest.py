@@ -22,6 +22,7 @@ from charlotte_knowledge_graph_generator.models import (
     GraphResponse,
     NodeDetail,
     NodeType,
+    SearchResult,
     SubGraphResponse,
 )
 
@@ -50,11 +51,23 @@ class MockLLMClient:
         self._subgraph = subgraph
         self._detail = detail
         self.generate_graph_calls: int = 0
+        self.generate_search_queries_calls: int = 0
         self.expand_node_calls: int = 0
         self.get_node_detail_calls: int = 0
+        self.last_search_context: list[SearchResult] = []
 
-    async def generate_graph(self, topic: str, depth: int) -> GraphResponse:
+    async def generate_search_queries(self, topic: str) -> list[str]:
+        self.generate_search_queries_calls += 1
+        return ["test query 1", "test query 2"]
+
+    async def generate_graph(
+        self,
+        topic: str,
+        depth: int,
+        search_context: list[SearchResult] | None = None,
+    ) -> GraphResponse:
         self.generate_graph_calls += 1
+        self.last_search_context = search_context or []
         return self._graph
 
     async def expand_node(

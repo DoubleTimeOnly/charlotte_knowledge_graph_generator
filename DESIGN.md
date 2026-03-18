@@ -163,9 +163,11 @@ Each connection item in the panel is clickable. Clicking pans and zooms the grap
 
 ### Loading (graph generation)
 
-The 4-stage LLM pipeline takes 30–60 seconds. During loading:
+The pipeline takes 30–70 seconds total (including web search). During loading:
 - A constellation animation pulses
-- Stage text cycles through: "Surveying entities…" → "Building connections…" → "Validating graph…" → "Finalizing…" at ~12s intervals
+- **Stage 0** ("Searching the web…") is shown at `t=0` **immediately** and advances to stage 1 when the `fetch()` call resolves (not on a timer). This makes the search visible to users as a distinct, real step.
+- **Stages 1–4** ("Surveying entities…" → "Building connections…" → "Validating graph…" → "Finalizing…") cycle on a ~12s interval timer that starts after the server response arrives.
+- If `TAVILY_API_KEY` is not set, the server skips search but the frontend still shows stage 0 briefly before the response returns.
 
 ---
 
@@ -186,6 +188,51 @@ At ≤768px:
 - Side panel becomes full-width, max-height 55vh, anchored below the graph
 - Legend is hidden
 - Topic input and search input shrink to 160px / 140px
+
+---
+
+---
+
+## Info Bar
+
+A thin bar below the top bar, shown after a graph first renders.
+
+| Property | Value |
+|---|---|
+| Height | 32px desktop / 44px mobile |
+| Background | `var(--bg-topbar)` |
+| Border | `border-bottom: 1px solid var(--border)` |
+| Layout | `flexbox`, `space-between` |
+| Left content | "Generated Mar 18, 2026" — `var(--text-xs)`, `var(--text-secondary)`, `var(--font-body)` |
+| Right content | "↺ Regenerate" — `.btn-ghost.btn-sm` |
+| Mobile | Timestamp hidden; Regenerate button only, right-aligned; `min-height: 44px` touch target |
+| Accessibility | `role="status"` + `aria-live="polite"` for screen reader announcement |
+
+---
+
+## Ghost Button (`.btn-ghost`)
+
+Used for low-emphasis actions such as Regenerate.
+
+| State | Style |
+|---|---|
+| Default | `background: transparent`, `border: 1px solid var(--border)`, `color: var(--text-secondary)` |
+| Hover | `border-color: var(--accent)`, `color: var(--accent)` |
+| Focus-visible | `outline: 2px solid var(--accent)`, `outline-offset: 2px` |
+| Disabled / loading | `opacity: 0.4`, `cursor: not-allowed`, `aria-disabled="true"` |
+
+---
+
+## Sources Section (Panel)
+
+Shown inside the node side panel when a node has `source_urls`.
+
+- Heading: `<h3 class="section-label">SOURCES</h3>` — matches CONNECTIONS treatment (same caps, same weight)
+- List: `<ul class="sources-list">` with `<li><a>` per citation
+- Citation link: `domain.com ↗` (stripped `www.`), `color: var(--accent)`, `var(--text-xs)`
+- Max 4 links shown per node
+- `target="_blank" rel="noopener noreferrer"` on all links
+- Section hidden when `source_urls.length === 0`
 
 ---
 

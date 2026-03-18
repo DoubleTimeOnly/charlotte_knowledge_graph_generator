@@ -1,5 +1,6 @@
 """Pydantic models for the knowledge graph API."""
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 
@@ -14,6 +15,12 @@ class NodeType(str, Enum):
     DOCUMENT = "Document"
 
 
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+
+
 class GraphNode(BaseModel):
     """A node in the knowledge graph."""
 
@@ -22,6 +29,7 @@ class GraphNode(BaseModel):
     type: NodeType
     description: str
     era: str | None = None
+    source_urls: list[str] = Field(default_factory=list)
 
 
 class GraphEdge(BaseModel):
@@ -39,6 +47,8 @@ class GraphResponse(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
     topic: str
+    sources: list[SearchResult] = Field(default_factory=list)
+    generated_at: datetime | None = None
 
 
 class SubGraphResponse(BaseModel):
@@ -65,6 +75,7 @@ class NodeDetail(BaseModel):
 class GraphRequest(BaseModel):
     topic: str = Field(..., min_length=1, max_length=500)
     depth: int = Field(default=2, ge=1, le=3)
+    force_refresh: bool = False
 
 
 class ExpandRequest(BaseModel):
@@ -91,6 +102,19 @@ class _LLMNodeInput(BaseModel):
     era: str | None = Field(default=None, description="Time period, e.g. '1993-2000'")
 
 
+class _LLMEnrichedNodeInput(_LLMNodeInput):
+    """Extended node input used only in the ENRICH stage tool schema.
+
+    Adds source_indices so the LLM can attribute each node to search results.
+    Kept separate from _LLMNodeInput to avoid polluting the SURVEY stage schema.
+    """
+
+    source_indices: list[int] = Field(
+        default_factory=list,
+        description="1-based indices into the provided search results list that informed this entity (1 = first result). Assign [] if no source specifically covers this entity.",
+    )
+
+
 class _LLMEdgeInput(BaseModel):
     source_label: str = Field(description="Label of the source node")
     target_label: str = Field(description="Label of the target node")
@@ -101,7 +125,7 @@ class _LLMEdgeInput(BaseModel):
 
 
 class _LLMGraphInput(BaseModel):
-    nodes: list[_LLMNodeInput] = Field(description="20-30 key entities in the final corrected graph")
+    nodes: list[_LLMEnrichedNodeInput] = Field(description="20-30 key entities in the final corrected graph")
     edges: list[_LLMEdgeInput] = Field(description="Directed causal connections between nodes")
 
 
