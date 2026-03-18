@@ -1,13 +1,17 @@
 """LLM prompt constants. Bump PROMPT_VERSION when changing any prompt."""
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
-# ── Graph generation ──────────────────────────────────────────────────────────
+# ── Graph generation — 4-stage pipeline ───────────────────────────────────────
+#
+# Stage 1 SURVEY: identify ~25-30 key entities using a causal bottleneck test
+# Stage 2 EDGES:  build directed causal edges using a necessity test
+# Stage 3 VALIDATE: review the graph for structural issues
+# Stage 4 ENRICH: produce the final corrected graph
 
-GRAPH_SYSTEM = """\
-You are a knowledge graph expert. Given a topic, create a structured knowledge graph \
-identifying key entities and their relationships to give a curious learner a high-level \
-overview of the topic.
+SURVEY_SYSTEM = """\
+You are a knowledge graph expert. Given a topic, identify the key entities that \
+belong in a causal knowledge graph.
 
 Entity types:
 - Person: Historical figures, leaders, scientists, activists, researchers
@@ -16,25 +20,94 @@ Entity types:
 - Organization: Countries, institutions, parties, companies, movements, alliances
 - Document: Papers, treaties, declarations, books, legislation
 
-Rules for a high-quality knowledge graph:
-1. Generate 15-25 entities total — enough for a comprehensive overview
-2. Every entity must have at least one edge connecting it to another entity
-3. The central topic entity (or the most important concept) should have 5+ connections
-4. Use specific relationship types: caused, led to, opposed, founded, signed, \
-participated in, resulted in, preceded, succeeded, established, abolished, supported, \
-rejected, cited, built on, was part of, influenced, responded to, negotiated
-5. Edge weight (1=weak context, 5=critical direct relationship)
-6. Labels: use proper nouns or established terminology — be specific, not vague
-7. Descriptions: factual, encyclopedic, 1-2 sentences
-8. Era: use "YYYY–YYYY" or "YYYY" format when the entity has a well-known time period
-9. Do NOT generate isolated nodes — every node must have edges
+Rules:
+1. Generate 25-30 entities total across all types
+2. Apply the CAUSAL BOTTLENECK TEST: only include an entity if removing it would \
+make downstream events unexplainable. Exclude entities that are merely associated.
+3. Aim for roughly: 30% Events, 25% People, 20% Organizations, 15% Concepts, 10% Documents
+4. Labels: use proper nouns or established terminology — be specific, not vague
+5. Descriptions: factual, encyclopedic, 2-4 sentences capturing the entity's significance
+6. Era: use "YYYY–YYYY" or "YYYY" format when the entity has a well-known time period
 """
 
-GRAPH_USER = """\
-Create a knowledge graph for the following topic. Generate 15-25 key entities and \
-their most important relationships.
+SURVEY_USER = """\
+Identify the key causal entities for a knowledge graph about this topic.
 
 Topic: {topic}
+"""
+
+EDGES_SYSTEM = """\
+You are a knowledge graph expert. Given a list of entities, construct the directed \
+causal edges between them.
+
+Rules:
+1. Generate 40-60 directed edges
+2. CAUSAL DIRECTION: A→B means A caused, enabled, or triggered B. Direction matters.
+3. NECESSITY TEST: only add an edge if explaining B requires mentioning A. \
+Skip edges where the connection is merely associative or contextual.
+4. NO TRANSITIVE SHORTCUTS: do not add A→C if the only path is A→B→C. \
+Add A→B and B→C instead.
+5. Edge labels must be specific action verbs: triggered, signed, founded, led_to, \
+opposed, established, abolished, enabled, resulted_in, preceded, negotiated, \
+cited, built_on, responded_to. Avoid vague labels like "related_to" or "connected".
+6. Edge weight (1=weak causal link, 5=direct and critical cause)
+7. Every entity should have at least one incoming or outgoing edge
+"""
+
+EDGES_USER = """\
+Construct directed causal edges for this knowledge graph.
+
+Topic: {topic}
+
+Entities:
+{json_nodes}
+"""
+
+VALIDATE_SYSTEM = """\
+You are a knowledge graph quality reviewer. Review the given graph and identify \
+structural issues.
+
+Check for:
+1. ORPHAN NODES: entities with zero connections
+2. MISSING CAUSAL LINKS: obvious causal relationships that are absent
+3. REDUNDANT NODES: entities that duplicate another node's role
+4. VAGUE EDGE LABELS: relationship types that don't describe a specific action
+5. MISSING ERA: important entities with no time period set
+
+For each issue, specify severity:
+- high: structural problem that breaks graph integrity (orphans, missing critical links)
+- medium: quality problem that reduces graph value (vague labels, missing eras)
+
+Return an empty list if the graph has no significant issues.
+"""
+
+VALIDATE_USER = """\
+Review this knowledge graph for structural and quality issues.
+
+{json_graph}
+"""
+
+ENRICH_SYSTEM = """\
+You are a knowledge graph expert. Given a knowledge graph and a list of validation \
+issues, produce the final corrected graph.
+
+Rules:
+1. Apply ALL high-severity fixes
+2. Apply medium-severity fixes where they don't add unnecessary complexity
+3. The final graph should have 20-30 nodes and 30-50 edges
+4. Maintain the same entity types, description style, and edge conventions as the input
+5. Do NOT add new entities unless required to fix a high-severity issue
+6. Every entity must have at least one edge
+"""
+
+ENRICH_USER = """\
+Produce the final corrected knowledge graph.
+
+Original graph:
+{json_graph}
+
+Validation issues:
+{validation_issues}
 """
 
 # ── Node expansion ────────────────────────────────────────────────────────────
