@@ -62,7 +62,7 @@ class TestGenerateGraphEndpoint:
     async def test_llm_refusal_returns_422(self, api_client, mock_llm):
         mock_llm._graph = None  # type: ignore[assignment]
 
-        async def raise_refusal(topic, depth):
+        async def raise_refusal(*args, **kwargs):
             raise LLMRefusalError("refused")
 
         mock_llm.generate_graph = raise_refusal
@@ -72,7 +72,7 @@ class TestGenerateGraphEndpoint:
         assert response.status_code == 422
 
     async def test_graph_generation_error_returns_503(self, api_client, mock_llm):
-        async def raise_error(topic, depth):
+        async def raise_error(*args, **kwargs):
             raise GraphGenerationError("bad output")
 
         mock_llm.generate_graph = raise_error

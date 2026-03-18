@@ -36,26 +36,6 @@
 **Priority:** P2
 **Depends on:** Core graph generation working
 
-### Create DESIGN.md — Canonical Design System Reference
-
-**What:** Formalize all design tokens and specs from the /plan-design-review session into a DESIGN.md file.
-
-**Why:** Without it, any future contributor who touches the frontend re-derives these decisions ad hoc, producing inconsistency. The tokens (colors, typography, spacing, node sizing, interaction states, mobile layout) are already fully specified — they just need to be written down.
-
-**Context:** The /plan-design-review session (2026-03-18) produced the full design system:
-- Color tokens for each node type (Person, Event, Concept, Organization, Document)
-- Graph canvas background: warm off-white #F7F5F0
-- Typography: Inter for UI chrome, DM Mono for labels
-- Node sizing: degree-proportional (hub=22px, mid=16px, leaf=11px)
-- All interaction states (loading, empty, error, success) per feature
-- Mobile layout: full-screen graph + bottom-sheet panel on tap
-- Keyboard navigation spec
-- ARIA roles and accessibility spec
-The design session also incorporated a reference screenshot showing the desired visual direction (persistent side panel, always-visible labels, circle nodes differentiated by color only, era filter pills at bottom).
-
-**Effort:** S (human: 1 day / CC+gstack: ~10 min)
-**Priority:** P1
-**Depends on:** None — can be written immediately
 
 ### LLM Response Streaming (SSE)
 
@@ -69,7 +49,41 @@ The design session also incorporated a reference screenshot showing the desired 
 **Priority:** P2
 **Depends on:** Core graph generation (non-streaming) working
 
-### Perplexity based web search for source content
+### Web Search for Node Expansion
+
+**What:** Run a 1-query Tavily search on the node label before `expand_node()` so expanded subgraphs are also web-grounded (currently expansion uses LLM weights only).
+
+**Why:** The main graph generation now uses Tavily search for accuracy — but when a user clicks "Expand node", the expansion still draws from LLM training weights. This creates an inconsistency: the base graph is grounded in current sources, but expanded nodes aren't.
+
+**Context:** Now that `SearchService`, `generate_search_queries`, and the `[SOURCE_CONTEXT]` prompt injection pattern all exist (shipped in the web-search-citations PR), adding search to expansion is straightforward:
+1. In `GraphService.expand_node()`, call `self._llm.generate_search_queries(node_label)` (or simply `[node_label]` for a single query)
+2. Call `self._search.search(queries)` for 1-3 results focused on the node
+3. Inject results into `EXPAND_USER` as a `[SOURCE_CONTEXT]` block
+4. The LLM `expand_node()` method would accept and use the context
+
+**Effort:** M (human: ~4h / CC+gstack: ~15 min)
+**Priority:** P2
+**Depends on:** Web search + per-node citations PR (this one)
+
 ### Make Expand Node work
 
+### Improve the info retrieval queries
+> INFO:charlotte_knowledge_graph_generator.graph_service:Generated the following queries for topic='How neuromorphic computing works and differs from traditional computing': ['neuromorphic computing architecture brain-inspired chips explained', 'Intel Loihi IBM TrueNorth spiking neural networks hardware', 'neuromorphic vs von Neumann architecture energy efficiency comparison']
+
+The lsat two queries are way too specific IMO
+
+### Model Selector
+Sonnet vs Haiku
+
+### History
+See what graphs are already cached
+
+### UI changes
+* move web search enabled next to explore button
+* move regenerate button next to date 
+
 ## Completed
+
+### Tavily Web Search + Per-Node Citations
+
+Added Tavily web search before LLM graph generation so graphs are grounded in current sources rather than LLM training weights alone. Each node now carries `source_urls` (up to 4 citations shown in the panel). Added loading stage 0 ("Searching the web…"), graph timestamp, and Regenerate button to force cache bypass. Degrades gracefully when `TAVILY_API_KEY` is absent.

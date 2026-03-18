@@ -4,17 +4,25 @@ generate_graph() pipeline:
   topic_str
       │
       ▼ validate (handled by Pydantic at API layer)
-  hash(topic + depth + prompt_version)
-      │
+  force_refresh?
+      │ YES → skip cache, go straight to QUERY_GEN
+      │ NO
       ▼ CacheLayer.get_graph()
   HIT ──────────────────────────────────► return GraphResponse
   MISS
       │
-      ▼ LLMClient.generate_graph()  ←  AsyncAnthropic, tool use
+      ▼ LLMClient.generate_search_queries(topic)  ← fast, no tool use
+  FALLBACK on error → [topic]
+      │
+      ▼ SearchService.search(queries)  ← parallel Tavily queries
+  FALLBACK on error → []
+      │
+      ▼ LLMClient.generate_graph(topic, depth, search_results)
   LLMRefusalError?  ──────────────────► re-raise (API returns 422)
   GraphGenerationError? ───────────────► re-raise (API returns 503)
   APITimeoutError? ────────────────────► retry up to MAX_RETRIES, then re-raise
       │
+      ▼ attach generated_at + sources to GraphResponse
       ▼ CacheLayer.set_graph()  (OperationalError → log + skip)
       ▼ return GraphResponse
 
@@ -26,6 +34,7 @@ _merge_graphs():
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 import anthropic
 
@@ -40,8 +49,10 @@ from charlotte_knowledge_graph_generator.models import (
     GraphResponse,
     NodeDetail,
     NodeType,
+    SearchResult,
     SubGraphResponse,
 )
+from charlotte_knowledge_graph_generator.search import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -94,19 +105,49 @@ class GraphService:
         llm: LLMClientProtocol,
         cache: CacheLayer,
         settings: Settings,
+        search: SearchService | None = None,
     ) -> None:
         self._llm = llm
         self._cache = cache
         self._settings = settings
+        self._search = search
 
-    async def generate_graph(self, topic: str, depth: int) -> GraphResponse:
-        cached = await self._cache.get_graph(topic, depth, self._settings.prompt_version)
-        if cached is not None:
-            logger.info("Cache hit for topic=%r depth=%d", topic, depth)
-            return cached
+    async def generate_graph(
+        self, topic: str, depth: int, force_refresh: bool = False
+    ) -> GraphResponse:
+        if not force_refresh:
+            cached = await self._cache.get_graph(topic, depth, self._settings.prompt_version)
+            if cached is not None:
+                logger.info("Cache hit for topic=%r depth=%d", topic, depth)
+                return cached
 
         logger.info("Cache miss for topic=%r depth=%d — calling LLM", topic, depth)
-        graph = await _with_retry(self._llm.generate_graph, topic, depth)
+
+        # Web search (optional — skipped when SearchService not configured)
+        search_results: list[SearchResult] = []
+        if self._search is not None:
+            try:
+                queries = await self._llm.generate_search_queries(topic)
+                logger.info(f"Generated the following queries for topic={topic!r}: {queries}")
+            except Exception:
+                logger.warning("Query generation failed for topic=%r, using topic as query", topic)
+                queries = [topic]
+            try:
+                search_results = await self._search.search(queries)
+                logger.info("Search returned %d results for topic=%r", len(search_results), topic)
+            except Exception:
+                logger.warning("Search failed for topic=%r, continuing with LLM-only", topic)
+                search_results = []
+
+        graph = await _with_retry(self._llm.generate_graph, topic, depth, search_results)
+
+        # Attach metadata
+        graph = graph.model_copy(
+            update={
+                "sources": search_results,
+                "generated_at": datetime.now(UTC),
+            }
+        )
 
         # Enforce server-side node cap
         if len(graph.nodes) > self._settings.max_nodes_per_graph:
@@ -114,10 +155,11 @@ class GraphService:
                 "Trimming graph from %d to %d nodes", len(graph.nodes), self._settings.max_nodes_per_graph
             )
             allowed_ids = {n.id for n in graph.nodes[: self._settings.max_nodes_per_graph]}
-            graph = GraphResponse(
-                nodes=graph.nodes[: self._settings.max_nodes_per_graph],
-                edges=[e for e in graph.edges if e.source in allowed_ids and e.target in allowed_ids],
-                topic=graph.topic,
+            graph = graph.model_copy(
+                update={
+                    "nodes": graph.nodes[: self._settings.max_nodes_per_graph],
+                    "edges": [e for e in graph.edges if e.source in allowed_ids and e.target in allowed_ids],
+                }
             )
 
         await self._cache.set_graph(topic, depth, self._settings.prompt_version, graph)

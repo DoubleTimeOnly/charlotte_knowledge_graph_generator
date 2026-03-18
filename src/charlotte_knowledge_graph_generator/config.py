@@ -12,7 +12,12 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     static_dir: str = "static"
     # Bump this string when prompts change to bust the cache
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
+    # Tavily web search (optional — feature degrades gracefully if absent)
+    tavily_api_key: str | None = None
+    search_max_results_per_query: int = 5
+    search_num_queries: int = 3
+    log_level: str = "INFO"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

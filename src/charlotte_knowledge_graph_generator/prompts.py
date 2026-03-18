@@ -2,16 +2,28 @@
 
 PROMPT_VERSION = "v2"
 
-# ── Graph generation — 4-stage pipeline ───────────────────────────────────────
+# ── Graph generation — 5-stage pipeline ───────────────────────────────────────
 #
-# Stage 1 SURVEY: identify ~25-30 key entities using a causal bottleneck test
-# Stage 2 EDGES:  build directed causal edges using a necessity test
-# Stage 3 VALIDATE: review the graph for structural issues
-# Stage 4 ENRICH: produce the final corrected graph
+# Stage 0 QUERY_GEN: generate 2-3 targeted search queries for the topic
+# Stage 0.5 SEARCH:  run queries via Tavily (async, outside LLM pipeline)
+# Stage 1 SURVEY:    identify ~25-30 key entities using a causal bottleneck test
+# Stage 2 EDGES:     build directed causal edges using a necessity test
+# Stage 3 VALIDATE:  review the graph for structural issues
+# Stage 4 ENRICH:    produce the final corrected graph with source attribution
+
+QUERY_GEN_SYSTEM = """\
+Generate exactly 2-3 search queries to research the topic provided.
+Each query on its own line. No bullets, no numbers, no punctuation at the end.
+Queries should cover different angles: overview, key figures/events, historical context.
+For technical topics (papers, algorithms), focus on the specific work and its context.
+"""
 
 SURVEY_SYSTEM = """\
 You are a knowledge graph expert. Given a topic, identify the key entities that \
 belong in a causal knowledge graph.
+
+You have access to recent web search results about this topic. Use them to identify \
+accurate, current entities. Treat them as authoritative sources for facts and context.
 
 Entity types:
 - Person: Historical figures, leaders, scientists, activists, researchers
@@ -34,6 +46,10 @@ SURVEY_USER = """\
 Identify the key causal entities for a knowledge graph about this topic.
 
 Topic: {topic}
+
+[SOURCE_CONTEXT]
+{search_context}
+[/SOURCE_CONTEXT]
 """
 
 EDGES_SYSTEM = """\
@@ -98,6 +114,11 @@ Rules:
 4. Maintain the same entity types, description style, and edge conventions as the input
 5. Do NOT add new entities unless required to fix a high-severity issue
 6. Every entity must have at least one edge
+
+Source attribution: For each node, add source_indices — the 1-based indices from the \
+SOURCE_CONTEXT below whose content mentions or supports this entity. \
+For example, use 1 for [1], 2 for [2], etc. \
+Assign [] if no source specifically covers this entity.
 """
 
 ENRICH_USER = """\
@@ -108,6 +129,10 @@ Original graph:
 
 Validation issues:
 {validation_issues}
+
+[SOURCE_CONTEXT]
+{search_context}
+[/SOURCE_CONTEXT]
 """
 
 # ── Node expansion ────────────────────────────────────────────────────────────

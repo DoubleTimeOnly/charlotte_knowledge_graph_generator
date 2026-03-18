@@ -18,8 +18,10 @@ from charlotte_knowledge_graph_generator.llm import (
     AnthropicLLMClient,
     GraphGenerationError,
     LLMRefusalError,
+    _process_llm_nodes,
+    _resolve_source_urls,
 )
-from charlotte_knowledge_graph_generator.models import NodeType
+from charlotte_knowledge_graph_generator.models import NodeType, SearchResult
 
 
 # ── SDK response builder ───────────────────────────────────────────────────────
@@ -257,3 +259,149 @@ class TestEnrichGraph:
         client = _make_client(_make_tool_response("create_knowledge_graph", bad_payload))
         with pytest.raises(GraphGenerationError, match="ENRICH stage"):
             await client._enrich_graph("topic", self._nodes(), self._edges(), [])
+
+    async def test_source_indices_resolved_to_urls(self):
+        """Nodes with source_indices in ENRICH payload get source_urls populated."""
+        search_results = [
+            SearchResult(title="T1", url="https://example.com/1", snippet="s1"),
+            SearchResult(title="T2", url="https://example.com/2", snippet="s2"),
+        ]
+        enriched_node = {**_SAMPLE_NODE, "source_indices": [1, 2]}  # 1-based
+        payload = {"nodes": [enriched_node], "edges": [_SAMPLE_EDGE]}
+        client = _make_client(_make_tool_response("create_knowledge_graph", payload))
+        result = await client._enrich_graph(
+            "topic", self._nodes(), self._edges(), [], search_results
+        )
+        assert result.nodes[0].source_urls == [
+            "https://example.com/1",
+            "https://example.com/2",
+        ]
+
+    async def test_source_indices_empty_when_no_search_results(self):
+        """When search_context is empty, source_urls should be empty."""
+        enriched_node = {**_SAMPLE_NODE, "source_indices": [1]}  # 1-based
+        payload = {"nodes": [enriched_node], "edges": [_SAMPLE_EDGE]}
+        client = _make_client(_make_tool_response("create_knowledge_graph", payload))
+        result = await client._enrich_graph("topic", self._nodes(), self._edges(), [])
+        assert result.nodes[0].source_urls == []
+
+
+# ── generate_search_queries ───────────────────────────────────────────────────
+
+
+def _make_text_response(text: str) -> MagicMock:
+    """Build a fake anthropic.types.Message with a text block (no tool use)."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+
+    msg = MagicMock()
+    msg.content = [block]
+    msg.stop_reason = "end_turn"
+    return msg
+
+
+class TestGenerateSearchQueries:
+    async def test_happy_path_returns_list_of_queries(self):
+        text = "Israel Palestine conflict overview\nOslo Accords history\nPalestinian statehood"
+        client = _make_client(_make_text_response(text))
+        queries = await client.generate_search_queries("Israel-Palestine conflict")
+        assert len(queries) == 3
+        assert queries[0] == "Israel Palestine conflict overview"
+        assert queries[2] == "Palestinian statehood"
+
+    async def test_truncates_to_three_queries(self):
+        text = "query 1\nquery 2\nquery 3\nquery 4\nquery 5"
+        client = _make_client(_make_text_response(text))
+        queries = await client.generate_search_queries("topic")
+        assert len(queries) == 3
+
+    async def test_fallback_on_empty_response(self):
+        """Empty LLM response should fall back to [topic]."""
+        client = _make_client(_make_text_response(""))
+        queries = await client.generate_search_queries("my topic")
+        assert queries == ["my topic"]
+
+    async def test_sdk_error_propagates(self):
+        """SDK-level errors should bubble up (GraphService handles the catch)."""
+        sdk = MagicMock()
+        sdk.messages = MagicMock()
+        sdk.messages.create = AsyncMock(side_effect=Exception("API down"))
+        client = AnthropicLLMClient(client=sdk, model="claude-test")
+        with pytest.raises(Exception, match="API down"):
+            await client.generate_search_queries("topic")
+
+
+# ── _resolve_source_urls ──────────────────────────────────────────────────────
+
+
+class TestResolveSourceUrls:
+    def _results(self):
+        return [
+            SearchResult(title="T0", url="https://example.com/0", snippet="s0"),
+            SearchResult(title="T1", url="https://example.com/1", snippet="s1"),
+            SearchResult(title="T2", url="https://example.com/2", snippet="s2"),
+        ]
+
+    def test_valid_indices_return_urls(self):
+        urls = _resolve_source_urls([1, 3], self._results())  # 1-based: [1]→/0, [3]→/2
+        assert urls == ["https://example.com/0", "https://example.com/2"]
+
+    def test_out_of_range_indices_filtered(self):
+        urls = _resolve_source_urls([99], self._results())
+        assert urls == []
+
+    def test_non_http_url_filtered(self):
+        results = [SearchResult(title="Bad", url="javascript:evil()", snippet="xss")]
+        urls = _resolve_source_urls([1], results)  # 1-based
+        assert urls == []
+
+    def test_empty_indices_returns_empty(self):
+        urls = _resolve_source_urls([], self._results())
+        assert urls == []
+
+    def test_empty_results_returns_empty(self):
+        urls = _resolve_source_urls([1, 2], [])
+        assert urls == []
+
+    def test_zero_index_filtered(self):
+        """0 is out of range for 1-based indexing."""
+        urls = _resolve_source_urls([0], self._results())
+        assert urls == []
+
+
+# ── _process_llm_nodes ────────────────────────────────────────────────────────
+
+
+class TestProcessLlmNodes:
+    def _make_node(self, label: str, source_indices: list[int] | None = None):
+        from charlotte_knowledge_graph_generator.models import _LLMEnrichedNodeInput
+
+        kwargs = {"label": label, "type": NodeType.CONCEPT, "description": "desc"}
+        if source_indices is not None:
+            kwargs["source_indices"] = source_indices
+        return _LLMEnrichedNodeInput(**kwargs)
+
+    def test_deduplicates_nodes_by_canonical_id(self):
+        nodes = [self._make_node("Oslo Accords"), self._make_node("Oslo Accords")]
+        result_nodes, _ = _process_llm_nodes(nodes)
+        assert len(result_nodes) == 1
+
+    def test_resolves_source_indices_to_urls(self):
+        search_results = [
+            SearchResult(title="T0", url="https://example.com/0", snippet="s0"),
+        ]
+        nodes = [self._make_node("Oslo Accords", source_indices=[1])]  # 1-based
+        result_nodes, _ = _process_llm_nodes(nodes, search_results)
+        assert result_nodes[0].source_urls == ["https://example.com/0"]
+
+    def test_no_source_indices_gives_empty_source_urls(self):
+        nodes = [self._make_node("Oslo Accords")]
+        result_nodes, _ = _process_llm_nodes(nodes)
+        assert result_nodes[0].source_urls == []
+
+    def test_builds_label_to_id_map(self):
+        nodes = [self._make_node("Oslo Accords"), self._make_node("Yasser Arafat")]
+        _, label_to_id = _process_llm_nodes(nodes)
+        assert "oslo accords" in label_to_id
+        assert "yasser arafat" in label_to_id

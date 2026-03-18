@@ -1,6 +1,6 @@
 """Tests for GraphService business logic."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 import httpx
@@ -12,8 +12,10 @@ from charlotte_knowledge_graph_generator.models import (
     GraphNode,
     GraphResponse,
     NodeType,
+    SearchResult,
     SubGraphResponse,
 )
+from charlotte_knowledge_graph_generator.search import SearchService
 
 
 # ── _with_retry ───────────────────────────────────────────────────────────────
@@ -302,3 +304,109 @@ class TestGetNodeDetail:
         )
         assert cached is not None
         assert cached.label == detail_fixture.label
+
+
+# ── GraphService + SearchService integration ──────────────────────────────────
+
+
+def _make_search_service_mock(results: list[SearchResult]) -> AsyncMock:
+    """Build a mock SearchService whose search() returns given results."""
+    mock = MagicMock(spec=SearchService)
+    mock.search = AsyncMock(return_value=results)
+    return mock
+
+
+class TestGenerateGraphWithSearch:
+    async def test_search_enabled_passes_results_to_llm(
+        self, mock_llm, cache, test_settings
+    ):
+        search_results = [SearchResult(title="T", url="https://example.com", snippet="s")]
+        search_mock = _make_search_service_mock(search_results)
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        await service.generate_graph("topic", depth=2)
+        assert mock_llm.last_search_context == search_results
+        search_mock.search.assert_called_once()
+
+    async def test_search_disabled_llm_called_with_empty_context(
+        self, mock_llm, cache, test_settings
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings, search=None)
+        await service.generate_graph("topic", depth=2)
+        assert mock_llm.last_search_context == []
+
+    async def test_search_failure_falls_back_to_llm_only(
+        self, mock_llm, cache, test_settings
+    ):
+        """If SearchService.search() raises, generate_graph still succeeds."""
+        search_mock = MagicMock(spec=SearchService)
+        search_mock.search = AsyncMock(side_effect=Exception("Tavily down"))
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        # Should not raise — graceful fallback
+        result = await service.generate_graph("topic", depth=2)
+        assert result is not None
+        assert mock_llm.generate_graph_calls == 1
+
+    async def test_query_gen_failure_falls_back_to_topic(
+        self, mock_llm, cache, test_settings
+    ):
+        """If generate_search_queries raises, falls back to [topic] and continues."""
+        search_results = [SearchResult(title="T", url="https://example.com", snippet="s")]
+        search_mock = _make_search_service_mock(search_results)
+
+        mock_llm.generate_search_queries = AsyncMock(side_effect=Exception("LLM down"))
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        result = await service.generate_graph("my topic", depth=2)
+        assert result is not None
+        # Search was still called — with [topic] as fallback query
+        search_mock.search.assert_called_once_with(["my topic"])
+
+    async def test_force_refresh_bypasses_cache_read(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
+        # Populate cache first
+        await service.generate_graph("topic", depth=2)
+        assert mock_llm.generate_graph_calls == 1
+
+        # force_refresh=True should bypass cache read
+        await service.generate_graph("topic", depth=2, force_refresh=True)
+        assert mock_llm.generate_graph_calls == 2
+
+    async def test_force_refresh_writes_to_cache(
+        self, mock_llm, cache, test_settings
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
+        await service.generate_graph("topic", depth=2, force_refresh=True)
+        # Result should be in cache after force_refresh
+        cached = await cache.get_graph("topic", 2, test_settings.prompt_version)
+        assert cached is not None
+
+    async def test_generated_at_is_set_on_new_graph(
+        self, mock_llm, cache, test_settings
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
+        result = await service.generate_graph("topic", depth=2)
+        assert result.generated_at is not None
+
+    async def test_partial_search_failure_uses_available_results(
+        self, mock_llm, cache, test_settings
+    ):
+        """If one of 2 search queries fails, partial results still used."""
+        partial_results = [SearchResult(title="T", url="https://example.com/1", snippet="s")]
+
+        search_mock = MagicMock(spec=SearchService)
+        # search() handles partial failures internally and returns what it can
+        search_mock.search = AsyncMock(return_value=partial_results)
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        result = await service.generate_graph("topic", depth=2)
+        assert mock_llm.last_search_context == partial_results

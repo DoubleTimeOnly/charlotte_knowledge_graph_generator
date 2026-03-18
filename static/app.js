@@ -50,6 +50,7 @@ function updateGraphColors() {
 
 let graphData     = { nodes: [], edges: [], topic: '' };
 let selectedId    = null;
+let searchEnabled = false;
 let expandingId   = null;
 let simulation    = null;
 let svgG          = null;          // zoomable <g> inside <svg>
@@ -444,7 +445,27 @@ function renderPanel(d) {
 
   // Pre-generated descriptions are 2-4 sentences — no expand toggle needed
   document.getElementById('panel-facts').setAttribute('hidden', '');
-  document.getElementById('panel-sources').setAttribute('hidden', '');
+
+  // Citations: show sources section only when the node has source_urls
+  const sourcesSection = document.getElementById('panel-sources');
+  const sourcesList = document.getElementById('sources-list');
+  if (sourcesSection && sourcesList) {
+    if (d.source_urls && d.source_urls.length > 0) {
+      sourcesList.innerHTML = d.source_urls
+        .slice(0, 4)
+        .map(url => {
+          try {
+            const domain = new URL(url).hostname.replace(/^www\./, '');
+            return `<li><a href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">${escHtml(domain)} ↗</a></li>`;
+          } catch { return ''; }
+        })
+        .filter(Boolean)
+        .join('');
+      sourcesSection.removeAttribute('hidden');
+    } else {
+      sourcesSection.setAttribute('hidden', '');
+    }
+  }
 
   // Connections — clickable to jump to that node
   const connList = document.getElementById('connections-list');
@@ -578,7 +599,7 @@ function removeNodeSpinner() {
 
 // ── Graph generation ──────────────────────────────────────────────────────────
 
-async function generateGraph(topic) {
+async function generateGraph(topic, forceRefresh = false) {
   if (!topic.trim()) {
     showToast('Enter a topic to explore', 'error');
     return;
@@ -591,23 +612,33 @@ async function generateGraph(topic) {
   si.dispatchEvent(new Event('input'));
   showGraphLoading();
 
-  // Stage progress — 4-stage pipeline takes ~30-60s
-  const stages = ['Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
+  // Disable regenerate button while loading
+  const regenBtn = document.getElementById('regen-btn');
+  if (regenBtn) { regenBtn.disabled = true; regenBtn.setAttribute('aria-disabled', 'true'); }
+
+  // Stage 0: "Searching the web…" shown immediately at t=0 (only when search is enabled)
+  // Stages advance on a 35s interval to reflect real search+LLM timing (~2-3 min total)
+  const stages = searchEnabled
+    ? ['Searching the web…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
+    : ['Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
   let stageIdx = 0;
+  let stageTimer = null;
   const stageTextEl = document.getElementById('loading-stage-text');
   if (stageTextEl) stageTextEl.textContent = stages[0];
-  const stageTimer = setInterval(() => {
+
+  // Start cycling stages immediately so users see progress during the entire wait
+  stageTimer = setInterval(() => {
     if (stageIdx < stages.length - 1) {
       stageIdx++;
       if (stageTextEl) stageTextEl.textContent = stages[stageIdx];
     }
-  }, 12000);
+  }, 35000);
 
   try {
     const res = await fetch('/api/graph', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: topic.trim(), depth: 2 }),
+      body: JSON.stringify({ topic: topic.trim(), depth: 2, force_refresh: forceRefresh }),
     });
 
     if (res.status === 429) {
@@ -637,14 +668,38 @@ async function generateGraph(topic) {
     document.getElementById('graph-svg').setAttribute('aria-label',
       `Knowledge graph: ${topic}, ${data.nodes.length} nodes, ${data.edges.length} connections`);
 
+    // Show info bar with timestamp
+    const infoBar = document.getElementById('graph-info-bar');
+    const tsEl = document.getElementById('graph-timestamp');
+    if (infoBar && tsEl) {
+      if (data.generated_at) {
+        const d = new Date(data.generated_at);
+        tsEl.textContent = `Generated ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+      } else {
+        tsEl.textContent = '';
+      }
+      infoBar.removeAttribute('hidden');
+    }
+
   } catch (err) {
     console.error('Graph generation error:', err);
     showGraphError();
   } finally {
     clearInterval(stageTimer);
     if (stageTextEl) stageTextEl.textContent = '';
+    if (regenBtn) { regenBtn.disabled = false; regenBtn.removeAttribute('aria-disabled'); }
   }
 }
+
+// Wire up Regenerate button once DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const regenBtn = document.getElementById('regen-btn');
+  if (regenBtn) {
+    regenBtn.addEventListener('click', () => {
+      if (currentTopic) generateGraph(currentTopic, true);
+    });
+  }
+});
 
 // ── Screen transitions ────────────────────────────────────────────────────────
 
@@ -859,3 +914,15 @@ document.addEventListener('keydown', (e) => {
 
 // Init
 updateThemeIcon();
+fetch('/api/config').then(r => r.json()).then(cfg => {
+  searchEnabled = cfg.search_enabled;
+  const label = cfg.search_enabled ? 'Web search enabled' : 'No web search';
+  const dotClass = cfg.search_enabled ? 'on' : 'off';
+  for (const id of ['home-search-status', 'top-search-status']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.querySelector('.search-status-dot').classList.add(dotClass);
+    el.querySelector('.search-status-label').textContent = label;
+    el.removeAttribute('hidden');
+  }
+}).catch(() => {});
