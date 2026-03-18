@@ -1,6 +1,7 @@
 """Pydantic models for the knowledge graph API."""
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -86,7 +87,7 @@ class NodeDetailRequest(BaseModel):
 class _LLMNodeInput(BaseModel):
     label: str = Field(description="Human-readable entity name, e.g. 'Oslo Accords'")
     type: NodeType = Field(description="Entity type")
-    description: str = Field(description="Factual 1-2 sentence description")
+    description: str = Field(description="Factual 2-4 sentence description capturing the entity's significance")
     era: str | None = Field(default=None, description="Time period, e.g. '1993-2000'")
 
 
@@ -100,8 +101,8 @@ class _LLMEdgeInput(BaseModel):
 
 
 class _LLMGraphInput(BaseModel):
-    nodes: list[_LLMNodeInput] = Field(description="15-25 key entities")
-    edges: list[_LLMEdgeInput] = Field(description="Meaningful connections between nodes")
+    nodes: list[_LLMNodeInput] = Field(description="20-30 key entities in the final corrected graph")
+    edges: list[_LLMEdgeInput] = Field(description="Directed causal connections between nodes")
 
 
 class _LLMSubGraphInput(BaseModel):
@@ -114,3 +115,22 @@ class _LLMNodeDetailInput(BaseModel):
     key_facts: list[str] = Field(description="3-5 key facts as concise bullet points")
     date_range: str | None = Field(default=None, description="Active period e.g. '1920-1948', or null")
     sources: list[str] = Field(default_factory=list, description="2-4 relevant source names")
+
+
+class _LLMSurveyOutput(BaseModel):
+    nodes: list[_LLMNodeInput] = Field(description="25-30 key entities for the knowledge graph")
+
+
+class _LLMEdgeListOutput(BaseModel):
+    edges: list[_LLMEdgeInput] = Field(description="Directed causal edges connecting the entities")
+
+
+class _LLMValidationIssue(BaseModel):
+    severity: Literal["high", "medium"] = Field(description="Issue severity: 'high' or 'medium'")
+    description: str = Field(description="Clear description of the issue and suggested fix")
+
+
+class _LLMValidationOutput(BaseModel):
+    issues: list[_LLMValidationIssue] = Field(
+        description="List of issues found. Empty list if the graph looks good."
+    )

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,6 +9,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&f[]=cabinet-grotesk@700,800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -65,12 +66,13 @@
       </div>
     </div>
     <div class="top-right">
+      <button id="theme-toggle" aria-label="Toggle theme">☽</button>
       <div class="legend" role="list" aria-label="Node type legend">
-        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#0F7075"></span>Person</span>
-        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#C2581A"></span>Event</span>
-        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#6B4FA0"></span>Concept</span>
-        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#1A7A4A"></span>Org</span>
-        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#B45309"></span>Doc</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Person" style="background:var(--color-person)"></span>Person</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Event" style="background:var(--color-event)"></span>Event</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Concept" style="background:var(--color-concept)"></span>Concept</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Organization" style="background:var(--color-org)"></span>Org</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" data-type="Document" style="background:var(--color-doc)"></span>Doc</span>
       </div>
       <div class="export-group">
         <button class="export-btn" id="export-png" title="Export as PNG" aria-label="Export graph as PNG">PNG</button>
@@ -102,6 +104,7 @@
           <div class="loading-node n6"></div>
         </div>
         <p class="loading-text">Generating knowledge graph…</p>
+        <p id="loading-stage-text" class="loading-stage-text"></p>
       </div>
 
       <!-- Empty state -->
@@ -120,19 +123,11 @@
 
     <!-- Side panel (30%) — always visible -->
     <aside id="side-panel" role="complementary" aria-label="Node details">
+      <div id="panel-resize-handle" aria-hidden="true"></div>
 
       <!-- Default (no node selected) -->
       <div id="panel-default">
-        <p class="panel-hint">Click any node to explore it — or tap <strong>Expand</strong> to go deeper.</p>
-      </div>
-
-      <!-- Loading skeleton -->
-      <div id="panel-loading" hidden aria-label="Loading node details" aria-live="polite">
-        <div class="skeleton skel-badge"></div>
-        <div class="skeleton skel-title"></div>
-        <div class="skeleton skel-line"></div>
-        <div class="skeleton skel-line short"></div>
-        <div class="skeleton skel-line"></div>
+        <p class="panel-hint">Click any node to explore it.</p>
       </div>
 
       <!-- Node content -->
@@ -157,12 +152,6 @@
         </section>
 
         <button id="expand-btn" class="btn-expand">→ Expand node</button>
-      </div>
-
-      <!-- Error state -->
-      <div id="panel-error" hidden role="alert">
-        <p class="panel-error-msg">Couldn't load node details.</p>
-        <button class="btn-link" id="panel-retry-btn">Try again</button>
       </div>
 
     </aside>

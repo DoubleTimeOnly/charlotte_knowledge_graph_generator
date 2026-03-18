@@ -10,6 +10,7 @@ GraphService receives the client via constructor injection so tests never
 hit the real API.
 """
 
+import json
 import logging
 from typing import Protocol, runtime_checkable
 
@@ -23,18 +24,29 @@ from charlotte_knowledge_graph_generator.models import (
     NodeDetail,
     NodeType,
     SubGraphResponse,
+    _LLMEdgeInput,
+    _LLMEdgeListOutput,
     _LLMGraphInput,
     _LLMNodeDetailInput,
     _LLMNodeInput,
     _LLMSubGraphInput,
+    _LLMSurveyOutput,
+    _LLMValidationIssue,
+    _LLMValidationOutput,
 )
 from charlotte_knowledge_graph_generator.prompts import (
+    EDGES_SYSTEM,
+    EDGES_USER,
+    ENRICH_SYSTEM,
+    ENRICH_USER,
     EXPAND_SYSTEM,
     EXPAND_USER,
-    GRAPH_SYSTEM,
-    GRAPH_USER,
     NODE_DETAIL_SYSTEM,
     NODE_DETAIL_USER,
+    SURVEY_SYSTEM,
+    SURVEY_USER,
+    VALIDATE_SYSTEM,
+    VALIDATE_USER,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,16 +193,179 @@ class AnthropicLLMClient:
         self._model = model
 
     async def generate_graph(self, topic: str, depth: int) -> GraphResponse:
-        schema = _LLMGraphInput.model_json_schema()
+        """4-stage pipeline: SURVEY → EDGES → VALIDATE → ENRICH."""
+        nodes = await self._survey_entities(topic)
+        edges = await self._construct_edges(topic, nodes)
+        issues = await self._validate_graph(nodes, edges)
+        return await self._enrich_graph(topic, nodes, edges, issues)
+
+    async def _survey_entities(self, topic: str) -> list[_LLMNodeInput]:
+        """Stage 1: identify ~25-30 causal entities."""
+        schema = _LLMSurveyOutput.model_json_schema()
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
-            system=GRAPH_SYSTEM,
-            messages=[{"role": "user", "content": GRAPH_USER.format(topic=topic)}],
+            system=SURVEY_SYSTEM,
+            messages=[{"role": "user", "content": SURVEY_USER.format(topic=topic)}],
+            tools=[
+                {
+                    "name": "create_node_list",
+                    "description": "Identify the key causal entities for the knowledge graph",
+                    "input_schema": schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": "create_node_list"},
+        )
+        raw_input = _extract_tool_input(response, "create_node_list")
+        try:
+            raw = _LLMSurveyOutput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise GraphGenerationError(f"SURVEY stage returned invalid schema: {exc}") from exc
+        logger.info("SURVEY: %d entities identified for topic %r", len(raw.nodes), topic)
+        return raw.nodes
+
+    async def _construct_edges(self, topic: str, nodes: list[_LLMNodeInput]) -> list[_LLMEdgeInput]:
+        """Stage 2: build directed causal edges between entities."""
+        json_nodes = json.dumps(
+            [{"label": n.label, "type": n.type.value, "description": n.description} for n in nodes],
+            indent=2,
+        )
+        schema = _LLMEdgeListOutput.model_json_schema()
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=4096,
+            system=EDGES_SYSTEM,
+            messages=[
+                {
+                    "role": "user",
+                    "content": EDGES_USER.format(topic=topic, json_nodes=json_nodes),
+                }
+            ],
+            tools=[
+                {
+                    "name": "create_edge_list",
+                    "description": "Construct directed causal edges between the entities",
+                    "input_schema": schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": "create_edge_list"},
+        )
+        raw_input = _extract_tool_input(response, "create_edge_list")
+        try:
+            raw = _LLMEdgeListOutput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise GraphGenerationError(f"EDGES stage returned invalid schema: {exc}") from exc
+        if len(raw.edges) < 5:
+            raise GraphGenerationError(
+                f"EDGES stage returned only {len(raw.edges)} edges (minimum 5 required)"
+            )
+        logger.info("EDGES: %d edges constructed", len(raw.edges))
+        return raw.edges
+
+    async def _validate_graph(
+        self, nodes: list[_LLMNodeInput], edges: list[_LLMEdgeInput]
+    ) -> list[_LLMValidationIssue]:
+        """Stage 3: review graph for structural issues. Empty list is valid."""
+        json_graph = json.dumps(
+            {
+                "nodes": [
+                    {"label": n.label, "type": n.type.value, "era": n.era}
+                    for n in nodes
+                ],
+                "edges": [
+                    {
+                        "source": e.source_label,
+                        "target": e.target_label,
+                        "relationship": e.relationship_type,
+                    }
+                    for e in edges
+                ],
+            },
+            indent=2,
+        )
+        schema = _LLMValidationOutput.model_json_schema()
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=2048,
+            system=VALIDATE_SYSTEM,
+            messages=[
+                {"role": "user", "content": VALIDATE_USER.format(json_graph=json_graph)}
+            ],
+            tools=[
+                {
+                    "name": "validate_graph",
+                    "description": "Review the knowledge graph and return a list of issues",
+                    "input_schema": schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": "validate_graph"},
+        )
+        raw_input = _extract_tool_input(response, "validate_graph")
+        try:
+            raw = _LLMValidationOutput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise GraphGenerationError(f"VALIDATE stage returned invalid schema: {exc}") from exc
+        high = sum(1 for i in raw.issues if i.severity == "high")
+        logger.info("VALIDATE: %d issues (%d high severity)", len(raw.issues), high)
+        return raw.issues
+
+    async def _enrich_graph(
+        self,
+        topic: str,
+        nodes: list[_LLMNodeInput],
+        edges: list[_LLMEdgeInput],
+        issues: list[_LLMValidationIssue],
+    ) -> GraphResponse:
+        """Stage 4: apply validation fixes and produce final GraphResponse."""
+        json_graph = json.dumps(
+            {
+                "nodes": [
+                    {
+                        "label": n.label,
+                        "type": n.type.value,
+                        "description": n.description,
+                        "era": n.era,
+                    }
+                    for n in nodes
+                ],
+                "edges": [
+                    {
+                        "source": e.source_label,
+                        "target": e.target_label,
+                        "relationship": e.relationship_type,
+                        "weight": e.weight,
+                    }
+                    for e in edges
+                ],
+            },
+            indent=2,
+        )
+        validation_issues = (
+            json.dumps(
+                [{"severity": i.severity, "description": i.description} for i in issues],
+                indent=2,
+            )
+            if issues
+            else "[]"
+        )
+        schema = _LLMGraphInput.model_json_schema()
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=8192,  # critical: full graph JSON can exceed 4096 tokens
+            system=ENRICH_SYSTEM,
+            messages=[
+                {
+                    "role": "user",
+                    "content": ENRICH_USER.format(
+                        json_graph=json_graph,
+                        validation_issues=validation_issues,
+                    ),
+                }
+            ],
             tools=[
                 {
                     "name": "create_knowledge_graph",
-                    "description": "Create a structured knowledge graph for the given topic",
+                    "description": "Produce the final corrected knowledge graph",
                     "input_schema": schema,
                 }
             ],
@@ -200,7 +375,10 @@ class AnthropicLLMClient:
         try:
             raw = _LLMGraphInput.model_validate(raw_input)
         except ValidationError as exc:
-            raise GraphGenerationError(f"LLM returned invalid graph schema: {exc}") from exc
+            raise GraphGenerationError(f"ENRICH stage returned invalid graph schema: {exc}") from exc
+        logger.info(
+            "ENRICH: final graph has %d nodes, %d edges", len(raw.nodes), len(raw.edges)
+        )
         return _process_llm_graph(raw, topic)
 
     async def expand_node(

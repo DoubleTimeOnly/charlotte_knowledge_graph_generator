@@ -69,4 +69,7 @@ The design session also incorporated a reference screenshot showing the desired 
 **Priority:** P2
 **Depends on:** Core graph generation (non-streaming) working
 
+### Perplexity based web search for source content
+### Make Expand Node work
+
 ## Completed
