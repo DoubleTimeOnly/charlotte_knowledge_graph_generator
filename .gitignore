@@ -43,3 +43,14 @@ htmlcov/
 
 # uv
 .uv/
+
+# Environment
+.env
+
+# Cache/database
+cache.db
+cache.db-shm
+cache.db-wal
+*.db-shm
+*.db-wal
+.gstack/

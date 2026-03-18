@@ -1,0 +1,66 @@
+{
+  "nodes": [
+    {
+      "id": "oslo_accords",
+      "label": "Oslo Accords",
+      "type": "Document",
+      "description": "1993 peace agreements between Israel and the PLO, establishing mutual recognition.",
+      "era": "1993"
+    },
+    {
+      "id": "yasser_arafat",
+      "label": "Yasser Arafat",
+      "type": "Person",
+      "description": "Chairman of the PLO who co-signed the Oslo Accords and led the Palestinian Authority.",
+      "era": null
+    },
+    {
+      "id": "yitzhak_rabin",
+      "label": "Yitzhak Rabin",
+      "type": "Person",
+      "description": "Israeli Prime Minister who signed the Oslo Accords, assassinated in 1995.",
+      "era": null
+    },
+    {
+      "id": "plo",
+      "label": "PLO",
+      "type": "Organization",
+      "description": "Palestine Liberation Organization, the main political body representing Palestinians.",
+      "era": null
+    },
+    {
+      "id": "two_state_solution",
+      "label": "Two-State Solution",
+      "type": "Concept",
+      "description": "Proposed resolution creating two independent states for Israelis and Palestinians.",
+      "era": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "yasser_arafat",
+      "target": "oslo_accords",
+      "relationship_type": "signed",
+      "weight": 5
+    },
+    {
+      "source": "yitzhak_rabin",
+      "target": "oslo_accords",
+      "relationship_type": "signed",
+      "weight": 5
+    },
+    {
+      "source": "yasser_arafat",
+      "target": "plo",
+      "relationship_type": "led",
+      "weight": 4
+    },
+    {
+      "source": "oslo_accords",
+      "target": "two_state_solution",
+      "relationship_type": "advanced",
+      "weight": 3
+    }
+  ],
+  "topic": "Israel-Palestine conflict"
+}

@@ -1,6 +1,6 @@
-"""Core functionality for the knowledge graph generator."""
+"""Charlotte Knowledge Graph Generator — public re-exports."""
 
+from charlotte_knowledge_graph_generator.api import app
+from charlotte_knowledge_graph_generator.models import GraphResponse, NodeDetail
 
-def hello(name: str) -> str:
-    """Return a greeting."""
-    return f"Hello, {name}!"
+__all__ = ["app", "GraphResponse", "NodeDetail"]
