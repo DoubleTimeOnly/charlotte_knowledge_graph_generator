@@ -7,12 +7,19 @@ name = "charlotte-knowledge-graph-generator"
 version = "0.1.0"
 description = "A knowledge graph generator for Charlotte"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 authors = [
     { name = "Your Name", email = "your.email@example.com" },
 ]
-license = { text = "MIT" }
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "anthropic>=0.50",
+    "aiosqlite>=0.20",
+    "pydantic-settings>=2.0",
+    "slowapi>=0.1.9",
+    "httpx>=0.27",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -27,10 +34,14 @@ dev = [
 dev-dependencies = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "pytest-asyncio>=0.23",
     "black>=23.0",
     "ruff>=0.1",
     "mypy>=1.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/charlotte_knowledge_graph_generator"]

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Charlotte — Knowledge Graph</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ── Home screen ─────────────────────────────────────────────────────────── -->
+<div id="home-screen">
+  <div class="home-content">
+    <h1 class="home-title">Charlotte</h1>
+    <p class="home-tagline">Explore any topic as an interactive knowledge graph</p>
+    <div class="home-input-row">
+      <input
+        id="home-topic-input"
+        type="text"
+        maxlength="500"
+        placeholder="Ask about anything — conflicts, economics, papers..."
+        aria-label="Topic"
+        autocomplete="off"
+      />
+      <button id="home-explore-btn" class="btn-primary">Explore</button>
+    </div>
+    <div class="example-chips">
+      <button class="chip" data-topic="Israel-Palestine conflict">Israel–Palestine conflict</button>
+      <button class="chip" data-topic="Closing the Strait of Hormuz">Closing the Strait of Hormuz</button>
+      <button class="chip" data-topic="Attention Is All You Need">Attention Is All You Need</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Graph screen ─────────────────────────────────────────────────────────── -->
+<div id="graph-screen" hidden>
+
+  <!-- Top bar -->
+  <header id="top-bar">
+    <div class="top-left">
+      <span id="app-name-link" class="app-name" role="button" tabindex="0" aria-label="Back to home">Charlotte</span>
+      <input
+        id="top-topic-input"
+        type="text"
+        maxlength="500"
+        placeholder="Enter topic..."
+        aria-label="Topic"
+        autocomplete="off"
+      />
+      <button id="top-explore-btn" class="btn-primary btn-sm">Explore</button>
+    </div>
+    <div class="top-center">
+      <div class="search-wrapper">
+        <input
+          id="search-input"
+          type="text"
+          placeholder="Search nodes..."
+          aria-label="Search nodes in graph"
+        />
+      </div>
+    </div>
+    <div class="top-right">
+      <div class="legend" role="list" aria-label="Node type legend">
+        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#0F7075"></span>Person</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#C2581A"></span>Event</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#6B4FA0"></span>Concept</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#1A7A4A"></span>Org</span>
+        <span class="legend-item" role="listitem"><span class="legend-dot" style="background:#B45309"></span>Doc</span>
+      </div>
+      <div class="export-group">
+        <button class="export-btn" id="export-png" title="Export as PNG" aria-label="Export graph as PNG">PNG</button>
+        <button class="export-btn" id="export-svg" title="Export as SVG" aria-label="Export graph as SVG">SVG</button>
+        <button class="export-btn" id="export-json" title="Export as JSON" aria-label="Export graph data as JSON">JSON</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main split layout -->
+  <main id="main-content">
+
+    <!-- Graph canvas (70%) -->
+    <div id="graph-container">
+      <svg
+        id="graph-svg"
+        role="img"
+        aria-label="Knowledge graph"
+      ></svg>
+
+      <!-- Loading overlay -->
+      <div id="graph-loading" hidden aria-live="polite" aria-label="Generating graph">
+        <div class="loading-constellation">
+          <div class="loading-node n1"></div>
+          <div class="loading-node n2"></div>
+          <div class="loading-node n3"></div>
+          <div class="loading-node n4"></div>
+          <div class="loading-node n5"></div>
+          <div class="loading-node n6"></div>
+        </div>
+        <p class="loading-text">Generating knowledge graph…</p>
+      </div>
+
+      <!-- Empty state -->
+      <div id="graph-empty" hidden role="status">
+        <p class="empty-title">Nothing found for this topic.</p>
+        <p class="empty-sub">Try a more specific topic or check your spelling.</p>
+        <button class="btn-secondary" id="empty-retry-btn">Try again</button>
+      </div>
+
+      <!-- Error state -->
+      <div id="graph-error" hidden role="alert">
+        <p class="error-title">Couldn't generate this graph.</p>
+        <button class="btn-secondary" id="error-retry-btn">Try again</button>
+      </div>
+    </div>
+
+    <!-- Side panel (30%) — always visible -->
+    <aside id="side-panel" role="complementary" aria-label="Node details">
+
+      <!-- Default (no node selected) -->
+      <div id="panel-default">
+        <p class="panel-hint">Click any node to explore it — or tap <strong>Expand</strong> to go deeper.</p>
+      </div>
+
+      <!-- Loading skeleton -->
+      <div id="panel-loading" hidden aria-label="Loading node details" aria-live="polite">
+        <div class="skeleton skel-badge"></div>
+        <div class="skeleton skel-title"></div>
+        <div class="skeleton skel-line"></div>
+        <div class="skeleton skel-line short"></div>
+        <div class="skeleton skel-line"></div>
+      </div>
+
+      <!-- Node content -->
+      <div id="panel-content" hidden>
+        <div class="panel-header">
+          <span id="panel-type-badge" class="type-badge"></span>
+          <button id="panel-close-btn" aria-label="Close node panel">✕</button>
+        </div>
+        <h2 id="panel-title"></h2>
+        <p id="panel-date-range" class="panel-date" hidden></p>
+        <p id="panel-summary" class="panel-summary"></p>
+        <ul id="panel-facts" class="panel-facts" hidden></ul>
+
+        <section id="panel-connections" hidden>
+          <h3 class="section-label">CONNECTIONS</h3>
+          <ul id="connections-list" class="connections-list"></ul>
+        </section>
+
+        <section id="panel-sources" hidden>
+          <span class="section-label">Sources: </span>
+          <span id="sources-text" class="sources-text"></span>
+        </section>
+
+        <button id="expand-btn" class="btn-expand">→ Expand node</button>
+      </div>
+
+      <!-- Error state -->
+      <div id="panel-error" hidden role="alert">
+        <p class="panel-error-msg">Couldn't load node details.</p>
+        <button class="btn-link" id="panel-retry-btn">Try again</button>
+      </div>
+
+    </aside>
+  </main>
+</div>
+
+<!-- Edge label tooltip -->
+<div id="edge-tooltip" class="edge-tooltip" hidden></div>
+
+<!-- Toast -->
+<div id="toast" role="alert" aria-live="assertive" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
