@@ -51,7 +51,7 @@ from charlotte_knowledge_graph_generator.prompts import (
     VALIDATE_SYSTEM,
     VALIDATE_USER,
 )
-from charlotte_knowledge_graph_generator.search import SearchService
+from charlotte_knowledge_graph_generator.sources import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,11 @@ def _process_llm_subgraph(raw: _LLMSubGraphInput) -> SubGraphResponse:
 @runtime_checkable
 class LLMClientProtocol(Protocol):
     async def generate_graph(
-        self, topic: str, depth: int, search_context: list[SearchResult] | None = None
+        self,
+        topic: str,
+        depth: int,
+        search_context: list[SearchResult] | None = None,
+        research_overview: str | None = None,
     ) -> GraphResponse: ...
 
     async def generate_search_queries(self, topic: str) -> list[str]: ...
@@ -219,37 +223,42 @@ class AnthropicLLMClient:
 
     async def generate_search_queries(self, topic: str) -> list[str]:
         """Fast non-tool Claude call to generate 2-3 search queries for the topic."""
-        response = await self._client.messages.create(
-            model=self._model,
-            max_tokens=150,
-            system=QUERY_GEN_SYSTEM,
-            messages=[{"role": "user", "content": topic}],
-        )
-        text = response.content[0].text.strip() if response.content else ""
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return lines[:3] if lines else [topic]
+        # response = await self._client.messages.create(
+        #     model=self._model,
+        #     max_tokens=150,
+        #     system=QUERY_GEN_SYSTEM,
+        #     messages=[{"role": "user", "content": topic}],
+        # )
+        # text = response.content[0].text.strip() if response.content else ""
+        # lines = [line.strip() for line in text.splitlines() if line.strip()]
+        # return lines[:3] if lines else [topic]
+        return [topic]
 
     async def generate_graph(
         self,
         topic: str,
         depth: int,
         search_context: list[SearchResult] | None = None,
+        research_overview: str | None = None,
     ) -> GraphResponse:
         """4-stage pipeline: SURVEY → EDGES → VALIDATE → ENRICH."""
         if search_context is None:
             search_context = []
-        nodes = await self._survey_entities(topic, search_context)
+        nodes = await self._survey_entities(topic, search_context, research_overview)
         edges = await self._construct_edges(topic, nodes)
         issues = await self._validate_graph(nodes, edges)
-        return await self._enrich_graph(topic, nodes, edges, issues, search_context)
+        return await self._enrich_graph(topic, nodes, edges, issues, search_context, research_overview)
 
     async def _survey_entities(
-        self, topic: str, search_context: list[SearchResult] | None = None
+        self, topic: str, search_context: list[SearchResult] | None = None,
+        research_overview: str | None = None,
     ) -> list[_LLMNodeInput]:
         """Stage 1: identify ~25-30 causal entities, grounded by search context."""
-        from charlotte_knowledge_graph_generator.search import SearchService
-
         formatted_context = SearchService.format_context(search_context or [])
+        research_overview_section = (
+            f"\n[RESEARCH_OVERVIEW]\n{research_overview}\n[/RESEARCH_OVERVIEW]"
+            if research_overview else ""
+        )
         schema = _LLMSurveyOutput.model_json_schema()
         response = await self._client.messages.create(
             model=self._model,
@@ -259,7 +268,9 @@ class AnthropicLLMClient:
                 {
                     "role": "user",
                     "content": SURVEY_USER.format(
-                        topic=topic, search_context=formatted_context
+                        topic=topic,
+                        search_context=formatted_context,
+                        research_overview_section=research_overview_section,
                     ),
                 }
             ],
@@ -372,11 +383,14 @@ class AnthropicLLMClient:
         edges: list[_LLMEdgeInput],
         issues: list[_LLMValidationIssue],
         search_context: list[SearchResult] | None = None,
+        research_overview: str | None = None,
     ) -> GraphResponse:
         """Stage 4: apply validation fixes and produce final GraphResponse with source attribution."""
-        from charlotte_knowledge_graph_generator.search import SearchService
-
         formatted_context = SearchService.format_context(search_context or [])
+        research_overview_section = (
+            f"\n[RESEARCH_OVERVIEW]\n{research_overview}\n[/RESEARCH_OVERVIEW]"
+            if research_overview else ""
+        )
         json_graph = json.dumps(
             {
                 "nodes": [
@@ -420,6 +434,7 @@ class AnthropicLLMClient:
                         json_graph=json_graph,
                         validation_issues=validation_issues,
                         search_context=formatted_context,
+                        research_overview_section=research_overview_section,
                     ),
                 }
             ],

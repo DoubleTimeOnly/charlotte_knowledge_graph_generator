@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(python -m pytest tests/ -q)"
+    ],
+    "additionalDirectories": [
+      "/home/victor/.gstack/projects/DoubleTimeOnly-charlotte_knowledge_graph_generator/ceo-plans"
+    ]
+  }
+}

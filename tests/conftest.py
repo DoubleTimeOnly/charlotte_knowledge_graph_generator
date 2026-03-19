@@ -55,6 +55,7 @@ class MockLLMClient:
         self.expand_node_calls: int = 0
         self.get_node_detail_calls: int = 0
         self.last_search_context: list[SearchResult] = []
+        self.last_research_overview: str | None = None
 
     async def generate_search_queries(self, topic: str) -> list[str]:
         self.generate_search_queries_calls += 1
@@ -65,9 +66,11 @@ class MockLLMClient:
         topic: str,
         depth: int,
         search_context: list[SearchResult] | None = None,
+        research_overview: str | None = None,
     ) -> GraphResponse:
         self.generate_graph_calls += 1
         self.last_search_context = search_context or []
+        self.last_research_overview = research_overview
         return self._graph
 
     async def expand_node(

@@ -31,6 +31,17 @@ class TestHealthEndpoint:
         assert response.json() == {"status": "ok"}
 
 
+class TestConfigEndpoint:
+    async def test_config_returns_search_and_research_flags(self, api_client):
+        response = await api_client.get("/api/config")
+        assert response.status_code == 200
+        data = response.json()
+        assert "search_enabled" in data
+        assert "research_mode" in data
+        assert isinstance(data["search_enabled"], bool)
+        assert isinstance(data["research_mode"], bool)
+
+
 class TestGenerateGraphEndpoint:
     async def test_valid_topic_returns_graph(self, api_client, graph_fixture):
         response = await api_client.post(

@@ -115,6 +115,23 @@ class TestSurveyEntities:
         with pytest.raises(GraphGenerationError, match="SURVEY stage"):
             await client._survey_entities("topic")
 
+    async def test_research_overview_injected_into_prompt(self):
+        """When research_overview is provided, [RESEARCH_OVERVIEW] block appears in the user prompt."""
+        sdk = MagicMock()
+        sdk.messages = MagicMock()
+        sdk.messages.create = AsyncMock(
+            return_value=_make_tool_response("create_node_list", _SURVEY_PAYLOAD)
+        )
+        client = AnthropicLLMClient(client=sdk, model="claude-test")
+        overview = "This is the synthesized research overview."
+
+        await client._survey_entities("some topic", research_overview=overview)
+
+        call_kwargs = sdk.messages.create.call_args.kwargs
+        user_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
+        assert "[RESEARCH_OVERVIEW]" in user_message
+        assert overview in user_message
+
 
 # ── _construct_edges ──────────────────────────────────────────────────────────
 
@@ -302,34 +319,26 @@ def _make_text_response(text: str) -> MagicMock:
 
 
 class TestGenerateSearchQueries:
-    async def test_happy_path_returns_list_of_queries(self):
-        text = "Israel Palestine conflict overview\nOslo Accords history\nPalestinian statehood"
-        client = _make_client(_make_text_response(text))
+    async def test_returns_topic_as_single_query(self):
+        """Stub implementation returns [topic] directly without calling the LLM."""
+        client = _make_client(_make_text_response(""))
         queries = await client.generate_search_queries("Israel-Palestine conflict")
-        assert len(queries) == 3
-        assert queries[0] == "Israel Palestine conflict overview"
-        assert queries[2] == "Palestinian statehood"
+        assert queries == ["Israel-Palestine conflict"]
 
-    async def test_truncates_to_three_queries(self):
-        text = "query 1\nquery 2\nquery 3\nquery 4\nquery 5"
-        client = _make_client(_make_text_response(text))
-        queries = await client.generate_search_queries("topic")
-        assert len(queries) == 3
-
-    async def test_fallback_on_empty_response(self):
-        """Empty LLM response should fall back to [topic]."""
+    async def test_returns_topic_verbatim_for_any_input(self):
+        """Result is always [topic] regardless of topic content."""
         client = _make_client(_make_text_response(""))
         queries = await client.generate_search_queries("my topic")
         assert queries == ["my topic"]
 
-    async def test_sdk_error_propagates(self):
-        """SDK-level errors should bubble up (GraphService handles the catch)."""
+    async def test_does_not_call_llm(self):
+        """Stub bypasses LLM — no API call should be made."""
         sdk = MagicMock()
         sdk.messages = MagicMock()
-        sdk.messages.create = AsyncMock(side_effect=Exception("API down"))
+        sdk.messages.create = AsyncMock()
         client = AnthropicLLMClient(client=sdk, model="claude-test")
-        with pytest.raises(Exception, match="API down"):
-            await client.generate_search_queries("topic")
+        await client.generate_search_queries("topic")
+        sdk.messages.create.assert_not_called()
 
 
 # ── _resolve_source_urls ──────────────────────────────────────────────────────

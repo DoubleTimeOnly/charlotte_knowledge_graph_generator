@@ -53,17 +53,17 @@
 
 **What:** Run a 1-query Tavily search on the node label before `expand_node()` so expanded subgraphs are also web-grounded (currently expansion uses LLM weights only).
 
-**Why:** The main graph generation now uses Tavily search for accuracy — but when a user clicks "Expand node", the expansion still draws from LLM training weights. This creates an inconsistency: the base graph is grounded in current sources, but expanded nodes aren't.
+**Why:** The main graph generation uses Tavily Research for accuracy, but when a user clicks "Expand node", the expansion still draws from LLM training weights. This creates an inconsistency: the base graph is research-grounded, but expanded nodes aren't.
 
-**Context:** Now that `SearchService`, `generate_search_queries`, and the `[SOURCE_CONTEXT]` prompt injection pattern all exist (shipped in the web-search-citations PR), adding search to expansion is straightforward:
-1. In `GraphService.expand_node()`, call `self._llm.generate_search_queries(node_label)` (or simply `[node_label]` for a single query)
-2. Call `self._search.search(queries)` for 1-3 results focused on the node
-3. Inject results into `EXPAND_USER` as a `[SOURCE_CONTEXT]` block
-4. The LLM `expand_node()` method would accept and use the context
+**Context:** After the Tavily Research backend PR lands, `GraphService` will hold both a `research_backend` and a `search_backend`. Adding search to expansion is then straightforward:
+1. In `GraphService.expand_node()`, call `self._search_backend.search([node_label])` for 1-3 results
+2. Pass results as `search_context` to `self._llm.expand_node()`
+3. Update `EXPAND_USER` prompt to accept and use a `[SOURCE_CONTEXT]` block
+4. The `expand_node()` method on `LLMClientProtocol` would accept `search_context: list[SearchResult] | None`
 
-**Effort:** M (human: ~4h / CC+gstack: ~15 min)
+**Effort:** S (human: ~2h / CC+gstack: ~10 min) — simplified by the research backend abstraction
 **Priority:** P2
-**Depends on:** Web search + per-node citations PR (this one)
+**Depends on:** Tavily Research backend PR (`tavily_research_for_source_generation` branch)
 
 ### Make Expand Node work
 
@@ -81,6 +81,9 @@ See what graphs are already cached
 ### UI changes
 * move web search enabled next to explore button
 * move regenerate button next to date 
+
+### Do store tavily research in db
+* Sometimes the rest of the graph creation fails, so caching helps here
 
 ## Completed
 

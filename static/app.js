@@ -51,6 +51,7 @@ function updateGraphColors() {
 let graphData     = { nodes: [], edges: [], topic: '' };
 let selectedId    = null;
 let searchEnabled = false;
+let researchMode  = false;
 let expandingId   = null;
 let simulation    = null;
 let svgG          = null;          // zoomable <g> inside <svg>
@@ -61,6 +62,7 @@ let nodeCircleSel = null;          // <circle> inside each group
 let labelSel      = null;
 let zoomBehavior  = null;          // exposed for centerOnNode
 let currentTopic  = '';
+let graphFitted   = false;         // true after initial auto-fit; prevents re-fit on simulation restart
 
 // ── Node sizing ───────────────────────────────────────────────────────────────
 
@@ -262,9 +264,15 @@ function renderGraph(data, preservePositions = false) {
     nodeGroupSel.attr('transform', d => `translate(${d.x},${d.y})`);
   });
 
-  // Auto-fit graph into viewport once simulation settles
+  // Auto-fit graph into viewport once simulation settles (only on initial load)
   if (!preservePositions) {
-    simulation.on('end', () => fitGraph());
+    graphFitted = false;
+    simulation.on('end', () => {
+      if (!graphFitted) {
+        graphFitted = true;
+        fitGraph();
+      }
+    });
   }
 
   if (selectedId) applyHighlight(selectedId);
@@ -311,15 +319,23 @@ window.addEventListener('resize', () => {
 // ── Drag behaviour ────────────────────────────────────────────────────────────
 
 function dragBehavior() {
+  let dragging = false;
   return d3.drag()
-    .on('start', (event, d) => {
-      if (!event.active) simulation?.alphaTarget(0.3).restart();
+    .on('start', (_event, d) => {
+      dragging = false;
       d.fx = d.x; d.fy = d.y;
     })
-    .on('drag',  (event, d) => { d.fx = event.x; d.fy = event.y; })
+    .on('drag',  (event, d) => {
+      if (!dragging) {
+        dragging = true;
+        simulation?.alphaTarget(0.3).restart();
+      }
+      d.fx = event.x; d.fy = event.y;
+    })
     .on('end',   (event, d) => {
       if (!event.active) simulation?.alphaTarget(0);
       d.fx = null; d.fy = null;
+      dragging = false;
     });
 }
 
@@ -345,6 +361,9 @@ function positionTooltip(event) {
 function onNodeClick(event, d) {
   event.stopPropagation();
   if (selectedId === d.id) return;
+  // Blur to prevent the browser's native blue focus ring on SVG elements.
+  // The .selected CSS class provides the white ring instead.
+  if (event.detail > 0) event.currentTarget.blur();
   selectNode(d);
 }
 
@@ -362,14 +381,17 @@ function deselectNode() {
 
 function applyHighlight(id) {
   if (!nodeGroupSel) return;
+  // Always clear stale hover CSS classes — they multiply with inline opacity and cause
+  // intersection-only highlighting when clicking a node while hover classes are present.
+  nodeGroupSel.classed('dimmed', false).classed('highlighted', false).classed('selected', d => d.id === id);
+  linkSel?.classed('dimmed', false).classed('highlighted', false);
+  linkLabelSel?.classed('dimmed', false).classed('visible', false);
   if (id === null) {
-    nodeGroupSel.style('opacity', null).classed('dimmed', false).classed('highlighted', false);
-    linkSel?.style('opacity', null).classed('dimmed', false).classed('highlighted', false);
-    linkLabelSel?.style('opacity', null).classed('dimmed', false).classed('visible', false);
+    nodeGroupSel.style('opacity', null);
+    linkSel?.style('opacity', null);
+    linkLabelSel?.style('opacity', null);
     return;
   }
-  // Dim everything, brighten selected + its neighbours via inline style
-  // (inline > class, so this overrides any .dimmed class from hover)
   const connected = getConnectedSet(id);
   nodeGroupSel.style('opacity', d => connected.has(d.id) ? 1 : 0.2);
   linkSel?.style('opacity', d => isEdgeConnected(d, id) ? 0.8 : 0.08);
@@ -616,11 +638,11 @@ async function generateGraph(topic, forceRefresh = false) {
   const regenBtn = document.getElementById('regen-btn');
   if (regenBtn) { regenBtn.disabled = true; regenBtn.setAttribute('aria-disabled', 'true'); }
 
-  // Stage 0: "Searching the web…" shown immediately at t=0 (only when search is enabled)
+  // Stage 0: first stage shown immediately at t=0 depends on active backend
   // Stages advance on a 35s interval to reflect real search+LLM timing (~2-3 min total)
-  const stages = searchEnabled
-    ? ['Searching the web…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
-    : ['Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
+  const stages = researchMode
+    ? ['Researching topic in depth…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
+    : ['Searching the web…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
   let stageIdx = 0;
   let stageTimer = null;
   const stageTextEl = document.getElementById('loading-stage-text');
@@ -916,12 +938,12 @@ document.addEventListener('keydown', (e) => {
 updateThemeIcon();
 fetch('/api/config').then(r => r.json()).then(cfg => {
   searchEnabled = cfg.search_enabled;
-  const label = cfg.search_enabled ? 'Web search enabled' : 'No web search';
-  const dotClass = cfg.search_enabled ? 'on' : 'off';
+  researchMode  = cfg.research_mode ?? false;
+  const label = cfg.research_mode ? 'Deep research enabled' : 'Web search enabled';
   for (const id of ['home-search-status', 'top-search-status']) {
     const el = document.getElementById(id);
     if (!el) continue;
-    el.querySelector('.search-status-dot').classList.add(dotClass);
+    el.querySelector('.search-status-dot').classList.add('on');
     el.querySelector('.search-status-label').textContent = label;
     el.removeAttribute('hidden');
   }
