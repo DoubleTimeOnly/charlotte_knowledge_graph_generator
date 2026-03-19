@@ -15,7 +15,7 @@ from charlotte_knowledge_graph_generator.models import (
     SearchResult,
     SubGraphResponse,
 )
-from charlotte_knowledge_graph_generator.search import SearchService
+from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
 
 
 # ── _with_retry ───────────────────────────────────────────────────────────────
@@ -329,26 +329,18 @@ class TestGenerateGraphWithSearch:
         assert mock_llm.last_search_context == search_results
         search_mock.search.assert_called_once()
 
-    async def test_search_disabled_llm_called_with_empty_context(
+    async def test_search_failure_raises_graph_generation_error(
         self, mock_llm, cache, test_settings
     ):
-        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings, search=None)
-        await service.generate_graph("topic", depth=2)
-        assert mock_llm.last_search_context == []
-
-    async def test_search_failure_falls_back_to_llm_only(
-        self, mock_llm, cache, test_settings
-    ):
-        """If SearchService.search() raises, generate_graph still succeeds."""
+        """If SearchService.search() raises, generate_graph raises GraphGenerationError."""
+        from charlotte_knowledge_graph_generator.llm import GraphGenerationError
         search_mock = MagicMock(spec=SearchService)
         search_mock.search = AsyncMock(side_effect=Exception("Tavily down"))
         service = GraphService(
             llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
         )
-        # Should not raise — graceful fallback
-        result = await service.generate_graph("topic", depth=2)
-        assert result is not None
-        assert mock_llm.generate_graph_calls == 1
+        with pytest.raises(GraphGenerationError):
+            await service.generate_graph("topic", depth=2)
 
     async def test_query_gen_failure_falls_back_to_topic(
         self, mock_llm, cache, test_settings
@@ -410,3 +402,48 @@ class TestGenerateGraphWithSearch:
         )
         result = await service.generate_graph("topic", depth=2)
         assert mock_llm.last_search_context == partial_results
+
+
+# ── GraphService + TavilyResearchBackend integration ─────────────────────────
+
+
+def _make_research_backend_mock(
+    overview: str | None,
+    sources: list[SearchResult],
+) -> AsyncMock:
+    mock = MagicMock(spec=TavilyResearchBackend)
+    mock.research = AsyncMock(return_value=(overview, sources))
+    return mock
+
+
+class TestGenerateGraphWithResearch:
+    async def test_research_backend_passes_overview_to_llm(
+        self, mock_llm, cache, test_settings
+    ):
+        overview = "Synthesized research overview about the topic."
+        sources = [SearchResult(title="Source", url="https://example.com", snippet="s")]
+        research_mock = _make_research_backend_mock(overview, sources)
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings,
+            research_backend=research_mock,
+        )
+        await service.generate_graph("topic", depth=2)
+
+        research_mock.research.assert_called_once_with("topic")
+        assert mock_llm.last_research_overview == overview
+        assert mock_llm.last_search_context == sources
+
+    async def test_research_failure_raises_graph_generation_error(
+        self, mock_llm, cache, test_settings
+    ):
+        from charlotte_knowledge_graph_generator.llm import GraphGenerationError
+        research_mock = MagicMock(spec=TavilyResearchBackend)
+        research_mock.research = AsyncMock(side_effect=Exception("Tavily research down"))
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings,
+            research_backend=research_mock,
+        )
+        with pytest.raises(GraphGenerationError):
+            await service.generate_graph("topic", depth=2)

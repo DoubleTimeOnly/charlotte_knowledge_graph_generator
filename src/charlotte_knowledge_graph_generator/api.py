@@ -27,7 +27,7 @@ from charlotte_knowledge_graph_generator.models import (
     NodeDetail,
     NodeDetailRequest,
 )
-from charlotte_knowledge_graph_generator.search import SearchService
+from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
@@ -50,6 +50,14 @@ async def lifespan(app: FastAPI):
         model=settings.anthropic_model,
     )
 
+    research_backend: TavilyResearchBackend | None = None
+    if settings.tavily_research_api_key:
+        research_backend = TavilyResearchBackend(
+            api_key=settings.tavily_research_api_key,
+            timeout_secs=settings.research_timeout_secs,
+        )
+        logger.info("Tavily Research API enabled (timeout=%ds)", settings.research_timeout_secs)
+
     search_service: SearchService | None = None
     if settings.tavily_api_key:
         search_service = SearchService(
@@ -57,10 +65,19 @@ async def lifespan(app: FastAPI):
             max_results=settings.search_max_results_per_query,
         )
         logger.info("Tavily search enabled (max_results=%d)", settings.search_max_results_per_query)
-    else:
-        logger.info("Tavily search disabled — TAVILY_API_KEY not set, running LLM-only mode")
 
-    service = GraphService(llm=llm_client, cache=cache, settings=settings, search=search_service)
+    if not research_backend and not search_service:
+        raise RuntimeError(
+            "No Tavily API keys configured. Set TAVILY_RESEARCH_API_KEY or TAVILY_API_KEY."
+        )
+
+    service = GraphService(
+        llm=llm_client,
+        cache=cache,
+        settings=settings,
+        search=search_service,
+        research_backend=research_backend,
+    )
 
     app.state.cache = cache
     app.state.service = service
@@ -108,7 +125,10 @@ async def health() -> dict:
 
 @app.get("/api/config")
 async def get_config() -> dict:
-    return {"search_enabled": settings.tavily_api_key is not None}
+    return {
+        "search_enabled": settings.tavily_api_key is not None,
+        "research_mode": settings.tavily_research_api_key is not None,
+    }
 
 
 @app.get("/admin/cache/stats")

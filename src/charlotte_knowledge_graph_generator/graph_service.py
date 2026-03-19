@@ -5,19 +5,22 @@ generate_graph() pipeline:
       │
       ▼ validate (handled by Pydantic at API layer)
   force_refresh?
-      │ YES → skip cache, go straight to QUERY_GEN
+      │ YES → skip cache
       │ NO
       ▼ CacheLayer.get_graph()
   HIT ──────────────────────────────────► return GraphResponse
   MISS
       │
-      ▼ LLMClient.generate_search_queries(topic)  ← fast, no tool use
-  FALLBACK on error → [topic]
+      ▼ IF research_backend set:
+      │     TavilyResearchBackend.research(topic)  ← autonomous multi-step (10-60s)
+      │     FALLBACK on error → (research_overview=None, search_results=[])
+      │ ELIF search_backend set:
+      │     LLMClient.generate_search_queries(topic)  ← fast, no tool use
+      │     FALLBACK on error → [topic]
+      │     SearchService.search(queries)  ← parallel Tavily queries
+      │     FALLBACK on error → []
       │
-      ▼ SearchService.search(queries)  ← parallel Tavily queries
-  FALLBACK on error → []
-      │
-      ▼ LLMClient.generate_graph(topic, depth, search_results)
+      ▼ LLMClient.generate_graph(topic, depth, search_results, research_overview)
   LLMRefusalError?  ──────────────────► re-raise (API returns 422)
   GraphGenerationError? ───────────────► re-raise (API returns 503)
   APITimeoutError? ────────────────────► retry up to MAX_RETRIES, then re-raise
@@ -52,7 +55,7 @@ from charlotte_knowledge_graph_generator.models import (
     SearchResult,
     SubGraphResponse,
 )
-from charlotte_knowledge_graph_generator.search import SearchService
+from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +109,13 @@ class GraphService:
         cache: CacheLayer,
         settings: Settings,
         search: SearchService | None = None,
+        research_backend: TavilyResearchBackend | None = None,
     ) -> None:
         self._llm = llm
         self._cache = cache
         self._settings = settings
         self._search = search
+        self._research_backend = research_backend
 
     async def generate_graph(
         self, topic: str, depth: int, force_refresh: bool = False
@@ -123,23 +128,36 @@ class GraphService:
 
         logger.info("Cache miss for topic=%r depth=%d — calling LLM", topic, depth)
 
-        # Web search (optional — skipped when SearchService not configured)
+        research_overview: str | None = None
         search_results: list[SearchResult] = []
-        if self._search is not None:
+
+        if self._research_backend is not None:
+            try:
+                research_overview, search_results = await self._research_backend.research(topic)
+                logger.info(
+                    "Research completed for topic=%r: overview_len=%d, sources=%d",
+                    topic,
+                    len(research_overview) if research_overview else 0,
+                    len(search_results),
+                )
+            except Exception as exc:
+                logger.error("Research failed for topic=%r: %s", topic, exc)
+                raise GraphGenerationError(f"Research failed for topic {topic!r}") from exc
+        elif self._search is not None:
             try:
                 queries = await self._llm.generate_search_queries(topic)
-                logger.info(f"Generated the following queries for topic={topic!r}: {queries}")
+                logger.info("Generated the following queries for topic=%r: %s", topic, queries)
             except Exception:
                 logger.warning("Query generation failed for topic=%r, using topic as query", topic)
                 queries = [topic]
             try:
                 search_results = await self._search.search(queries)
                 logger.info("Search returned %d results for topic=%r", len(search_results), topic)
-            except Exception:
-                logger.warning("Search failed for topic=%r, continuing with LLM-only", topic)
-                search_results = []
+            except Exception as exc:
+                logger.error("Search failed for topic=%r: %s", topic, exc)
+                raise GraphGenerationError(f"Search failed for topic {topic!r}") from exc
 
-        graph = await _with_retry(self._llm.generate_graph, topic, depth, search_results)
+        graph = await _with_retry(self._llm.generate_graph, topic, depth, search_results, research_overview)
 
         # Attach metadata
         graph = graph.model_copy(

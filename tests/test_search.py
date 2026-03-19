@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from charlotte_knowledge_graph_generator.search import SearchResult, SearchService
+from charlotte_knowledge_graph_generator.sources import SearchService
+from charlotte_knowledge_graph_generator.models import SearchResult
 
 
 def _make_tavily_response(results: list[dict]) -> MagicMock:

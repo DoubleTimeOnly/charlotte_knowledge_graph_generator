@@ -1,6 +1,6 @@
 """LLM prompt constants. Bump PROMPT_VERSION when changing any prompt."""
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 # ── Graph generation — 5-stage pipeline ───────────────────────────────────────
 #
@@ -46,7 +46,7 @@ SURVEY_USER = """\
 Identify the key causal entities for a knowledge graph about this topic.
 
 Topic: {topic}
-
+{research_overview_section}
 [SOURCE_CONTEXT]
 {search_context}
 [/SOURCE_CONTEXT]
@@ -129,7 +129,7 @@ Original graph:
 
 Validation issues:
 {validation_issues}
-
+{research_overview_section}
 [SOURCE_CONTEXT]
 {search_context}
 [/SOURCE_CONTEXT]

@@ -12,11 +12,14 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     static_dir: str = "static"
     # Bump this string when prompts change to bust the cache
-    prompt_version: str = "v2"
-    # Tavily web search (optional — feature degrades gracefully if absent)
+    prompt_version: str = "v3"
+    # Tavily web search — basic search (optional, used for node expansion)
     tavily_api_key: str | None = None
     search_max_results_per_query: int = 5
     search_num_queries: int = 3
+    # Tavily Research API — autonomous multi-step research (optional, used for graph generation)
+    tavily_research_api_key: str | None = None
+    research_timeout_secs: int = 180
     log_level: str = "INFO"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

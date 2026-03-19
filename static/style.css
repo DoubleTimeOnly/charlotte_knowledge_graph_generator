@@ -612,8 +612,12 @@ input  { font-family: inherit; }
 /* ── D3 graph elements ────────────────────────────────────────────────────── */
 .node-group { cursor: pointer; }
 .node-group:focus { outline: none; }
-.node-group:focus .node-circle {
-  stroke: var(--accent);
+.node-group:focus-visible .node-circle {
+  stroke: white;
+  stroke-width: 2.5;
+}
+.node-group.selected .node-circle {
+  stroke: white;
   stroke-width: 2.5;
 }
 .node-group:hover .node-circle { filter: brightness(1.2); }
