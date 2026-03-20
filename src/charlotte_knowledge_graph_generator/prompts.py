@@ -1,6 +1,6 @@
 """LLM prompt constants. Bump PROMPT_VERSION when changing any prompt."""
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 # ── Graph generation — 5-stage pipeline ───────────────────────────────────────
 #
@@ -135,33 +135,73 @@ Validation issues:
 [/SOURCE_CONTEXT]
 """
 
-# ── Node expansion ────────────────────────────────────────────────────────────
+# ── Node expansion — 4-stage pipeline ─────────────────────────────────────────
+#
+# Stage 1 EXPAND_SURVEY: identify up to N new entities connected to the selected node
+# Stage 2 EDGES:         build directed causal edges (reuses EDGES_SYSTEM/USER)
+# Stage 3 VALIDATE:      review graph for structural issues (reuses VALIDATE_SYSTEM/USER)
+# Stage 4 EXPAND_ENRICH: produce final corrected subgraph with source attribution
 
-EXPAND_SYSTEM = """\
-You are expanding a specific node in an existing knowledge graph. The user has \
-selected a node and wants to explore it more deeply by seeing entities that are \
-closely connected to it.
+EXPAND_SURVEY_SYSTEM = """\
+You are expanding a specific node in an existing knowledge graph. Discover NEW \
+entities that are closely connected to the selected node and its neighbors.
+
+You have access to recent web search results. Use them to generate accurate, \
+well-grounded entities. Treat them as authoritative sources for facts.
+
+Entity types:
+- Person: Historical figures, leaders, scientists, activists, researchers
+- Event: Historical events, milestones, conflicts, agreements, discoveries
+- Concept: Ideas, theories, ideologies, phenomena, fields of study
+- Organization: Countries, institutions, parties, companies, movements, alliances
+- Document: Papers, treaties, declarations, books, legislation
 
 Rules:
-1. Generate 5-12 NEW entities NOT already listed in the existing graph context
-2. All new entities must connect to the selected entity or to each other
-3. Focus on entities specifically relevant to the selected entity, not just \
-broadly related to the overall topic
-4. Use the same entity types and relationship conventions as the main graph
-5. Reveal something surprising or deeper — connections a curious learner would \
-appreciate discovering
-6. Do NOT include any entity whose label appears in the existing context list
+1. Generate ONLY new entities — do NOT re-generate the seed entities already in the graph
+2. Apply the CAUSAL BOTTLENECK TEST: only include an entity if it meaningfully \
+connects to the selected node or its neighbors
+3. Each new entity must have at least one causal relationship to the selected \
+node or one of its neighbors
+4. Labels: use proper nouns or established terminology — be specific, not vague
+5. Descriptions: factual, encyclopedic, 2-4 sentences capturing the entity's significance
+6. Era: use "YYYY–YYYY" or "YYYY" format when the entity has a well-known time period
 """
 
-EXPAND_USER = """\
-Expand this node in the knowledge graph by generating closely related NEW entities.
+EXPAND_SURVEY_USER = """\
+Expand the knowledge graph by discovering entities connected to a specific node.
 
-Selected node: {node_label} (type: {node_type})
+Selected node: {node_label}
 
-Existing graph nodes (DO NOT duplicate these):
+These entities are already in the graph — do NOT re-generate them, but DO \
+connect new entities to them via edges:
+{seed_entity_names}
+
+Existing graph nodes (DO NOT duplicate any of these):
 {context_nodes}
 
-Generate 5-12 new entities that deepen understanding of "{node_label}".
+[SOURCE_CONTEXT]
+{search_context}
+[/SOURCE_CONTEXT]
+
+Generate up to {max_new} NEW entities that deepen understanding of "{node_label}".
+"""
+
+EXPAND_ENRICH_SYSTEM = """\
+You are a knowledge graph expert. Given a subgraph expansion and a list of \
+validation issues, produce the final corrected subgraph.
+
+Rules:
+1. Apply ALL high-severity fixes
+2. Apply medium-severity fixes where they don't add unnecessary complexity
+3. Preserve ALL provided nodes — do NOT add new entities to reach a target count, \
+and do NOT remove nodes. Only add entities if required to fix a high-severity issue.
+4. Maintain the same entity types, description style, and edge conventions as the input
+5. Every entity must have at least one edge
+
+Source attribution: For each node, add source_indices — the 1-based indices from \
+the SOURCE_CONTEXT below whose content mentions or supports this entity. \
+For example, use 1 for [1], 2 for [2], etc. \
+Assign [] if no source specifically covers this entity.
 """
 
 # ── Node detail ───────────────────────────────────────────────────────────────

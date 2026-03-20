@@ -223,7 +223,7 @@ class TestExpandNode:
             context_nodes=["Yasser Arafat", "PLO"],
             current_graph=graph_fixture,
         )
-        assert mock_llm.expand_node_calls == 1
+        assert mock_llm.expand_node_pipeline_calls == 1
         # New node from subgraph_fixture should appear
         node_ids = {n.id for n in merged.nodes}
         assert "jimmy_carter" in node_ids
@@ -258,7 +258,7 @@ class TestExpandNode:
         async def return_multi(*args, **kwargs):
             return multi_subgraph
 
-        mock_llm.expand_node = return_multi
+        mock_llm.expand_node_pipeline = return_multi
 
         test_settings.max_nodes_per_expand = 1  # only 1 new node allowed
         service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
@@ -270,6 +270,95 @@ class TestExpandNode:
         )
         new_node_count = len(merged.nodes) - len(graph_fixture.nodes)
         assert new_node_count <= 1
+
+
+class TestExpandNodeWithSearch:
+    async def test_expand_cache_hit_skips_llm_and_search(
+        self, mock_llm, cache, test_settings, graph_fixture, subgraph_fixture
+    ):
+        seed_labels = ",".join(sorted(n.label.lower() for n in graph_fixture.nodes))
+        await cache.set_expansion(
+            "Oslo Accords", NodeType.DOCUMENT.value, test_settings.prompt_version, subgraph_fixture,
+            seed_labels=seed_labels,
+        )
+        search_mock = _make_search_service_mock([])
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        await service.expand_node(
+            node_label="Oslo Accords",
+            node_type=NodeType.DOCUMENT,
+            context_nodes=[],
+            current_graph=graph_fixture,
+        )
+        assert mock_llm.expand_node_pipeline_calls == 0
+        search_mock.search.assert_not_called()
+
+    async def test_expand_cache_miss_calls_search_then_llm(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        search_results = [SearchResult(title="T", url="https://example.com", snippet="s")]
+        search_mock = _make_search_service_mock(search_results)
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        await service.expand_node(
+            node_label="Oslo Accords",
+            node_type=NodeType.DOCUMENT,
+            context_nodes=[],
+            current_graph=graph_fixture,
+        )
+        assert mock_llm.expand_node_pipeline_calls == 1
+        search_mock.search.assert_called_once_with(["Oslo Accords"])
+        assert mock_llm.last_expansion_search_context == search_results
+
+    async def test_expand_cache_miss_writes_to_expansion_cache(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
+        await service.expand_node(
+            node_label="Oslo Accords",
+            node_type=NodeType.DOCUMENT,
+            context_nodes=[],
+            current_graph=graph_fixture,
+        )
+        seed_labels = ",".join(sorted(n.label.lower() for n in graph_fixture.nodes))
+        cached = await cache.get_expansion(
+            "Oslo Accords", NodeType.DOCUMENT.value, test_settings.prompt_version, seed_labels
+        )
+        assert cached is not None
+        assert len(cached.nodes) >= 1  # subgraph_fixture has 1 node (jimmy_carter); pipeline may add seeds too
+
+    async def test_expand_no_search_service_calls_llm_only(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        service = GraphService(llm=mock_llm, cache=cache, settings=test_settings)
+        await service.expand_node(
+            node_label="Oslo Accords",
+            node_type=NodeType.DOCUMENT,
+            context_nodes=[],
+            current_graph=graph_fixture,
+        )
+        assert mock_llm.expand_node_pipeline_calls == 1
+        assert mock_llm.last_expansion_search_context == []
+
+    async def test_expand_search_failure_raises_graph_generation_error(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        from charlotte_knowledge_graph_generator.llm import GraphGenerationError
+
+        search_mock = MagicMock(spec=SearchService)
+        search_mock.search = AsyncMock(side_effect=Exception("Tavily down"))
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, search=search_mock
+        )
+        with pytest.raises(GraphGenerationError):
+            await service.expand_node(
+                node_label="Oslo Accords",
+                node_type=NodeType.DOCUMENT,
+                context_nodes=[],
+                current_graph=graph_fixture,
+            )
 
 
 class TestGetNodeDetail:

@@ -13,12 +13,12 @@ generate_graph() pipeline:
       │
       ▼ IF research_backend set:
       │     TavilyResearchBackend.research(topic)  ← autonomous multi-step (10-60s)
-      │     FALLBACK on error → (research_overview=None, search_results=[])
+      │     on error → raise GraphGenerationError
       │ ELIF search_backend set:
       │     LLMClient.generate_search_queries(topic)  ← fast, no tool use
       │     FALLBACK on error → [topic]
       │     SearchService.search(queries)  ← parallel Tavily queries
-      │     FALLBACK on error → []
+      │     on error → raise GraphGenerationError
       │
       ▼ LLMClient.generate_graph(topic, depth, search_results, research_overview)
   LLMRefusalError?  ──────────────────► re-raise (API returns 422)
@@ -27,6 +27,27 @@ generate_graph() pipeline:
       │
       ▼ attach generated_at + sources to GraphResponse
       ▼ CacheLayer.set_graph()  (OperationalError → log + skip)
+      ▼ return GraphResponse
+
+expand_node() pipeline:
+  node_label, node_type, context_nodes, current_graph
+      │
+      ▼ CacheLayer.get_expansion(node_label, node_type, prompt_version)
+  HIT ──────────────────────────────────► cap → merge → return GraphResponse
+  MISS
+      │
+      ▼ IF search_backend set:
+      │     SearchService.search([node_label])  ← 1 query
+      │     on error → raise GraphGenerationError
+      │
+      ▼ LLMClient.expand_node(label, type, ctx_nodes, search_context)
+  LLMRefusalError?  ──────────────────► re-raise (API returns 422)
+  GraphGenerationError? ───────────────► re-raise (API returns 503)
+  APITimeoutError? ────────────────────► retry up to MAX_RETRIES, then re-raise
+      │
+      ▼ cap to max_nodes_per_expand
+      ▼ CacheLayer.set_expansion()  (OperationalError → log + skip)
+      ▼ _merge_graphs(current_graph, addition)
       ▼ return GraphResponse
 
 _merge_graphs():
@@ -85,14 +106,18 @@ async def _with_retry(coro, *args):
 
 
 def _merge_graphs(base: GraphResponse, addition: SubGraphResponse) -> GraphResponse:
-    """Merge a sub-graph into the base graph, deduplicating nodes by id."""
+    """Merge a sub-graph into the base graph, deduplicating nodes and edges by id."""
     existing_ids = {n.id for n in base.nodes}
     new_nodes = [n for n in addition.nodes if n.id not in existing_ids]
 
     # Only include edges whose both endpoints exist in the merged graph
     all_ids = existing_ids | {n.id for n in new_nodes}
+    existing_edge_keys = {(e.source, e.target) for e in base.edges}
     new_edges = [
-        e for e in addition.edges if e.source in all_ids and e.target in all_ids
+        e for e in addition.edges
+        if e.source in all_ids
+        and e.target in all_ids
+        and (e.source, e.target) not in existing_edge_keys
     ]
 
     return GraphResponse(
@@ -190,16 +215,50 @@ class GraphService:
         context_nodes: list[str],
         current_graph: GraphResponse,
     ) -> GraphResponse:
-        addition = await _with_retry(
-            self._llm.expand_node, node_label, node_type, context_nodes
+        # Cache key includes sorted seed labels so different neighbor contexts are cached separately
+        seed_labels = ",".join(sorted(n.label.lower() for n in current_graph.nodes))
+        cached = await self._cache.get_expansion(
+            node_label, node_type.value, self._settings.prompt_version, seed_labels
         )
+        if cached is not None:
+            logger.info("Expansion cache hit for node=%r", node_label)
+            addition = cached
+        else:
+            logger.info("Expansion cache miss for node=%r — running 4-stage pipeline", node_label)
 
-        # Enforce expansion cap
-        if len(addition.nodes) > self._settings.max_nodes_per_expand:
-            capped_ids = {n.id for n in addition.nodes[: self._settings.max_nodes_per_expand]}
-            addition = SubGraphResponse(
-                nodes=addition.nodes[: self._settings.max_nodes_per_expand],
-                edges=[e for e in addition.edges if e.source in capped_ids and e.target in capped_ids],
+            search_context: list[SearchResult] = []
+            if self._search is not None:
+                try:
+                    search_context = await self._search.search([node_label])
+                    logger.info("Expansion search returned %d results for node=%r", len(search_context), node_label)
+                except Exception as exc:
+                    raise GraphGenerationError(f"Search failed for expansion of node {node_label!r}") from exc
+
+            # current_graph.nodes = seed nodes (origin + direct neighbors from stub_graph)
+            addition = await _with_retry(
+                self._llm.expand_node_pipeline,
+                node_label,
+                current_graph.nodes,
+                context_nodes,
+                search_context,
+                self._settings.max_nodes_per_expand,
+            )
+
+            # Safety cap: enforce max_nodes_per_expand on truly new nodes
+            seed_ids = {n.id for n in current_graph.nodes}
+            new_only = [n for n in addition.nodes if n.id not in seed_ids]
+            if len(new_only) > self._settings.max_nodes_per_expand:
+                new_only = new_only[: self._settings.max_nodes_per_expand]
+                seeds_in_addition = [n for n in addition.nodes if n.id in seed_ids]
+                capped_nodes = seeds_in_addition + new_only
+                capped_ids = {n.id for n in capped_nodes}
+                addition = SubGraphResponse(
+                    nodes=capped_nodes,
+                    edges=[e for e in addition.edges if e.source in capped_ids and e.target in capped_ids],
+                )
+
+            await self._cache.set_expansion(
+                node_label, node_type.value, self._settings.prompt_version, addition, seed_labels
             )
 
         merged = _merge_graphs(current_graph, addition)

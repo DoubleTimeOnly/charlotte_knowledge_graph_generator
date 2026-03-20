@@ -564,6 +564,17 @@ document.getElementById('expand-btn').addEventListener('click', async () => {
   addNodeSpinner(selectedId);
 
   const contextNodes = graphData.nodes.map(n => n.label);
+
+  // Compute direct neighbors of the selected node (handle D3's object mutation on edges)
+  const neighborIds = new Set();
+  graphData.edges.forEach(e => {
+    const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+    const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+    if (srcId === node.id) neighborIds.add(tgtId);
+    if (tgtId === node.id) neighborIds.add(srcId);
+  });
+  const seedNodes = [node, ...graphData.nodes.filter(n => neighborIds.has(n.id))];
+
   try {
     const res = await fetch('/api/expand', {
       method: 'POST',
@@ -573,6 +584,7 @@ document.getElementById('expand-btn').addEventListener('click', async () => {
         node_label: node.label,
         node_type: node.type,
         context_nodes: contextNodes,
+        seed_nodes: seedNodes,
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -7,6 +7,8 @@ Charlotte supports two generation modes depending on which Tavily API key is con
 - **Web Search** — Charlotte runs targeted Tavily searches before generating, adding source citations to each node
 - **Deep Research** — Charlotte uses Tavily's autonomous Research API to produce a synthesized overview before graph generation, yielding the most accurate and comprehensive results
 
+Both initial graph generation and **node expansion** run the same 4-stage pipeline: SURVEY → EDGES → VALIDATE → ENRICH. Expanding a node searches for related content, surveys new entities connected to the selected node and its neighbors, constructs edges, validates graph integrity, and enriches with source attribution.
+
 ## Prerequisites
 
 - Python 3.12+
@@ -47,10 +49,10 @@ All settings are read from environment variables or a `.env` file in the project
 | `TAVILY_API_KEY` | *(optional)* | Tavily search API key — enables web search mode and per-node citations. Used for graph generation when no Research key is set. |
 | `CACHE_DB_PATH` | `cache.db` | SQLite cache file path |
 | `MAX_NODES_PER_GRAPH` | `25` | Node cap for initial graph generation |
-| `MAX_NODES_PER_EXPAND` | `12` | Node cap per expansion |
+| `MAX_NODES_PER_EXPAND` | `10` | Maximum new nodes added per expansion |
 | `RATE_LIMIT_PER_MINUTE` | `10` | API requests per IP per minute |
 | `STATIC_DIR` | `static` | Directory serving the frontend |
-| `PROMPT_VERSION` | `v3` | Cache-busting key — bump when prompts change |
+| `PROMPT_VERSION` | `v4` | Cache-busting key — bump when prompts change |
 | `RESEARCH_TIMEOUT_SECS` | `120` | Timeout for Tavily Research API calls |
 | `SEARCH_MAX_RESULTS_PER_QUERY` | `5` | Tavily results fetched per search query (web search mode) |
 | `SEARCH_NUM_QUERIES` | `3` | Number of search queries generated per topic (web search mode) |
@@ -58,23 +60,18 @@ All settings are read from environment variables or a `.env` file in the project
 
 ## Generation Modes
 
-### Deep Research (recommended)
+### Web Search (recommended)
+
+Set `TAVILY_API_KEY` (without `TAVILY_RESEARCH_API_KEY`). Charlotte generates 2–3 targeted search queries and runs them in parallel via Tavily. Search results are injected as context into the graph generation pipeline, and each node is tagged with the source URLs that informed it — shown as clickable citation links in the side panel.
+
+### Deep Research (WIP)
 
 Set `TAVILY_RESEARCH_API_KEY`. When a graph is requested, Charlotte calls Tavily's autonomous Research API, which searches and synthesizes multiple sources into a comprehensive overview (takes 10–60 seconds). This overview is injected into the graph generation pipeline alongside the source URLs, producing the most accurate and up-to-date graphs.
 
 The loading indicator shows "Researching topic in depth…" during the research phase.
 
-### Web Search
-
-Set `TAVILY_API_KEY` (without `TAVILY_RESEARCH_API_KEY`). Charlotte generates 2–3 targeted search queries and runs them in parallel via Tavily. Search results are injected as context into the graph generation pipeline, and each node is tagged with the source URLs that informed it — shown as clickable citation links in the side panel.
-
-### LLM-only
-
-No Tavily key required. Graphs are generated entirely from Claude's training knowledge. Quality is good for well-documented topics but may lag on recent events.
 
 ### Fallback behaviour
-
-If Deep Research or Web Search fails for any reason (network error, rate limit, timeout), Charlotte falls back silently to LLM-only generation. No error is shown to the user.
 
 The graph toolbar shows when a graph was generated and a **↺ Regenerate** button to force a fresh generation and bypass the cache.
 
@@ -122,8 +119,19 @@ uv run mypy src/
 
 ### `POST /api/expand`
 ```json
-{ "node_id": "oslo_accords", "node_label": "Oslo Accords", "node_type": "Document", "context_nodes": ["Yasser Arafat", "PLO"] }
+{
+  "node_id": "oslo_accords",
+  "node_label": "Oslo Accords",
+  "node_type": "Document",
+  "context_nodes": ["Yasser Arafat", "PLO", "...all current node labels"],
+  "seed_nodes": [
+    { "id": "oslo_accords", "label": "Oslo Accords", "type": "Document", "description": "..." },
+    { "id": "yasser_arafat", "label": "Yasser Arafat", "type": "Person", "description": "..." }
+  ]
+}
 ```
+
+`seed_nodes` should contain the selected node plus its direct neighbors in the current graph. The expansion pipeline uses them as the starting point for discovery — these nodes are never re-generated, only connected to.
 
 ### `POST /api/node/detail`
 ```json

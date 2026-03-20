@@ -143,7 +143,7 @@ class TestExpandNodeEndpoint:
         async def raise_refusal(*args, **kwargs):
             raise LLMRefusalError("refused")
 
-        mock_llm.expand_node = raise_refusal
+        mock_llm.expand_node_pipeline = raise_refusal
         response = await api_client.post(
             "/api/expand",
             json={
@@ -159,7 +159,7 @@ class TestExpandNodeEndpoint:
         async def raise_error(*args, **kwargs):
             raise GraphGenerationError("expand failed")
 
-        mock_llm.expand_node = raise_error
+        mock_llm.expand_node_pipeline = raise_error
         response = await api_client.post(
             "/api/expand",
             json={"node_id": "n1", "node_label": "N1", "node_type": "Concept", "context_nodes": []},
@@ -172,7 +172,7 @@ class TestExpandNodeEndpoint:
         async def raise_timeout(*args, **kwargs):
             raise exc
 
-        mock_llm.expand_node = raise_timeout
+        mock_llm.expand_node_pipeline = raise_timeout
         with patch("charlotte_knowledge_graph_generator.graph_service.asyncio.sleep", new_callable=AsyncMock):
             response = await api_client.post(
                 "/api/expand",
