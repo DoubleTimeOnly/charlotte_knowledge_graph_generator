@@ -28,10 +28,10 @@ from charlotte_knowledge_graph_generator.models import (
     _LLMEdgeInput,
     _LLMEdgeListOutput,
     _LLMEnrichedNodeInput,
+    _LLMExpansionSurveyOutput,
     _LLMGraphInput,
     _LLMNodeDetailInput,
     _LLMNodeInput,
-    _LLMSubGraphInput,
     _LLMSurveyOutput,
     _LLMValidationIssue,
     _LLMValidationOutput,
@@ -41,8 +41,9 @@ from charlotte_knowledge_graph_generator.prompts import (
     EDGES_USER,
     ENRICH_SYSTEM,
     ENRICH_USER,
-    EXPAND_SYSTEM,
-    EXPAND_USER,
+    EXPAND_ENRICH_SYSTEM,
+    EXPAND_SURVEY_SYSTEM,
+    EXPAND_SURVEY_USER,
     NODE_DETAIL_SYSTEM,
     NODE_DETAIL_USER,
     QUERY_GEN_SYSTEM,
@@ -153,27 +154,6 @@ def _process_llm_graph(
     return GraphResponse(nodes=nodes, edges=edges, topic=topic)
 
 
-def _process_llm_subgraph(raw: _LLMSubGraphInput) -> SubGraphResponse:
-    """Convert LLM expansion output to a SubGraphResponse."""
-    nodes, label_to_id = _process_llm_nodes(raw.nodes)
-
-    edges = []
-    for e in raw.edges:
-        source_id = label_to_id.get(e.source_label.lower().strip())
-        target_id = label_to_id.get(e.target_label.lower().strip())
-        if not source_id or not target_id or source_id == target_id:
-            continue
-        edges.append(
-            GraphEdge(
-                source=source_id,
-                target=target_id,
-                relationship_type=e.relationship_type,
-                weight=e.weight,
-            )
-        )
-
-    return SubGraphResponse(nodes=nodes, edges=edges)
-
 
 @runtime_checkable
 class LLMClientProtocol(Protocol):
@@ -187,11 +167,13 @@ class LLMClientProtocol(Protocol):
 
     async def generate_search_queries(self, topic: str) -> list[str]: ...
 
-    async def expand_node(
+    async def expand_node_pipeline(
         self,
         node_label: str,
-        node_type: NodeType,
+        seed_nodes: list[GraphNode],
         context_nodes: list[str],
+        search_context: list[SearchResult] | None = None,
+        max_new: int = 10,
     ) -> SubGraphResponse: ...
 
     async def get_node_detail(
@@ -384,8 +366,10 @@ class AnthropicLLMClient:
         issues: list[_LLMValidationIssue],
         search_context: list[SearchResult] | None = None,
         research_overview: str | None = None,
+        enrich_system: str | None = None,
     ) -> GraphResponse:
         """Stage 4: apply validation fixes and produce final GraphResponse with source attribution."""
+        system_prompt = enrich_system if enrich_system is not None else ENRICH_SYSTEM
         formatted_context = SearchService.format_context(search_context or [])
         research_overview_section = (
             f"\n[RESEARCH_OVERVIEW]\n{research_overview}\n[/RESEARCH_OVERVIEW]"
@@ -426,7 +410,7 @@ class AnthropicLLMClient:
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=8192,  # critical: full graph JSON can exceed 4096 tokens
-            system=ENRICH_SYSTEM,
+            system=system_prompt,
             messages=[
                 {
                     "role": "user",
@@ -457,43 +441,87 @@ class AnthropicLLMClient:
         )
         return _process_llm_graph(raw, topic, search_context or [])
 
-    async def expand_node(
+    async def _survey_expansion(
         self,
         node_label: str,
-        node_type: NodeType,
+        seed_nodes: list[GraphNode],
         context_nodes: list[str],
-    ) -> SubGraphResponse:
+        search_context: list[SearchResult] | None = None,
+        max_new: int = 10,
+    ) -> list[_LLMNodeInput]:
+        """Expansion Stage 1: identify up to max_new new entities connected to the selected node."""
+        seed_names = "\n".join(f"- {n.label} ({n.type.value})" for n in seed_nodes) or "(none)"
         context_str = "\n".join(f"- {n}" for n in context_nodes) or "(none)"
-        schema = _LLMSubGraphInput.model_json_schema()
+        formatted_search = SearchService.format_context(search_context or [])
+        schema = _LLMExpansionSurveyOutput.model_json_schema()
         response = await self._client.messages.create(
             model=self._model,
-            max_tokens=2048,
-            system=EXPAND_SYSTEM,
+            max_tokens=4096,
+            system=EXPAND_SURVEY_SYSTEM,
             messages=[
                 {
                     "role": "user",
-                    "content": EXPAND_USER.format(
+                    "content": EXPAND_SURVEY_USER.format(
                         node_label=node_label,
-                        node_type=node_type.value,
+                        seed_entity_names=seed_names,
                         context_nodes=context_str,
+                        search_context=formatted_search,
+                        max_new=max_new,
                     ),
                 }
             ],
             tools=[
                 {
-                    "name": "expand_node",
-                    "description": "Generate new entities connected to the selected node",
+                    "name": "create_expansion_entities",
+                    "description": "Identify new entities to add during node expansion",
                     "input_schema": schema,
                 }
             ],
-            tool_choice={"type": "tool", "name": "expand_node"},
+            tool_choice={"type": "tool", "name": "create_expansion_entities"},
         )
-        raw_input = _extract_tool_input(response, "expand_node")
+        raw_input = _extract_tool_input(response, "create_expansion_entities")
         try:
-            raw = _LLMSubGraphInput.model_validate(raw_input)
+            raw = _LLMExpansionSurveyOutput.model_validate(raw_input)
         except ValidationError as exc:
-            raise GraphGenerationError(f"LLM returned invalid subgraph schema: {exc}") from exc
-        return _process_llm_subgraph(raw)
+            raise GraphGenerationError(f"EXPAND SURVEY stage returned invalid schema: {exc}") from exc
+        logger.info("EXPAND SURVEY: %d new entities for node=%r", len(raw.nodes), node_label)
+        return raw.nodes
+
+    async def expand_node_pipeline(
+        self,
+        node_label: str,
+        seed_nodes: list[GraphNode],
+        context_nodes: list[str],
+        search_context: list[SearchResult] | None = None,
+        max_new: int = 10,
+    ) -> SubGraphResponse:
+        """4-stage expansion pipeline: EXPAND_SURVEY → EDGES → VALIDATE → EXPAND_ENRICH."""
+        if search_context is None:
+            search_context = []
+
+        # Stage 1: survey new entities
+        new_node_inputs = await self._survey_expansion(
+            node_label, seed_nodes, context_nodes, search_context, max_new
+        )
+        if not new_node_inputs:
+            logger.warning("EXPAND SURVEY: no new entities returned for node=%r", node_label)
+            return SubGraphResponse(nodes=[], edges=[])
+
+        # Combine seed nodes (already enriched) as _LLMNodeInput + new surveyed entities
+        seed_inputs = [
+            _LLMNodeInput(label=n.label, type=n.type, description=n.description, era=n.era)
+            for n in seed_nodes
+        ]
+        all_nodes = seed_inputs + new_node_inputs
+
+        # Stages 2-4: reuse the same pipeline as generate_graph
+        edges = await self._construct_edges(node_label, all_nodes)
+        issues = await self._validate_graph(all_nodes, edges)
+        full = await self._enrich_graph(
+            node_label, all_nodes, edges, issues, search_context,
+            enrich_system=EXPAND_ENRICH_SYSTEM,
+        )
+        return SubGraphResponse(nodes=full.nodes, edges=full.edges)
 
     async def get_node_detail(
         self,

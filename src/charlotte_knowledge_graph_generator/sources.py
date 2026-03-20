@@ -46,6 +46,7 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 TAVILY_RESEARCH_URL = "https://api.tavily.com/research"
 
 MAX_RESEARCH_CHARS = 100000  # Truncation limit for research overviews injected into prompts
+MAX_SNIPPET_CHARS = 400  # Tavily content field can be full article text; keep prompts lean
 RESEARCH_POLL_INTERVAL_SECS = 3  # How often to poll for research completion
 
 
@@ -172,7 +173,7 @@ class TavilyResearchBackend:
             SearchResult(
                 title=r.get("title", ""),
                 url=r.get("url", ""),
-                snippet=r.get("content", ""),
+                snippet=r.get("content", "")[:MAX_SNIPPET_CHARS],
             )
             for r in data.get("sources", [])
             if r.get("url", "").startswith(("http://", "https://"))

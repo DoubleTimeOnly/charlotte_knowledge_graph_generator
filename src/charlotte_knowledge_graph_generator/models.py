@@ -83,6 +83,7 @@ class ExpandRequest(BaseModel):
     node_label: str
     node_type: NodeType
     context_nodes: list[str] = Field(default_factory=list)
+    seed_nodes: list[GraphNode] = Field(default_factory=list)  # origin node + direct neighbors
 
 
 class NodeDetailRequest(BaseModel):
@@ -129,11 +130,6 @@ class _LLMGraphInput(BaseModel):
     edges: list[_LLMEdgeInput] = Field(description="Directed causal connections between nodes")
 
 
-class _LLMSubGraphInput(BaseModel):
-    nodes: list[_LLMNodeInput] = Field(description="5-12 NEW entities connected to the selected node")
-    edges: list[_LLMEdgeInput] = Field(description="Edges connecting new nodes to selected and each other")
-
-
 class _LLMNodeDetailInput(BaseModel):
     summary: str = Field(description="150-200 word comprehensive explanation of the entity")
     key_facts: list[str] = Field(description="3-5 key facts as concise bullet points")
@@ -143,6 +139,10 @@ class _LLMNodeDetailInput(BaseModel):
 
 class _LLMSurveyOutput(BaseModel):
     nodes: list[_LLMNodeInput] = Field(description="25-30 key entities for the knowledge graph")
+
+
+class _LLMExpansionSurveyOutput(BaseModel):
+    nodes: list[_LLMNodeInput] = Field(description="New entities to add during node expansion")
 
 
 class _LLMEdgeListOutput(BaseModel):

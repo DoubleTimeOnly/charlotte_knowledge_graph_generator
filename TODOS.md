@@ -72,6 +72,18 @@
 
 The lsat two queries are way too specific IMO
 
+### Targeted search queries for node expansion
+
+**What:** Generate a 1-query expansion-specific search query using a fast non-tool LLM call before the Tavily search in `expand_node()`. Instead of searching `[node_label]` verbatim, produce a targeted query like "Oslo Accords peace process 1993 signatories significance".
+
+**Why:** Better Tavily results → richer expanded node descriptions and source citations. The current implementation (from the web-search-node-expansion PR) searches the bare node label, which works but misses context about what aspect of the entity is most relevant to expand.
+
+**Context:** `generate_search_queries()` already exists on `LLMClientProtocol` but is currently stubbed to return `[topic]`. A simpler variant (1-query, expansion-aware) could be added as `generate_expansion_query(node_label, node_type, context_nodes)` — a fast Haiku call using the `QUERY_GEN_SYSTEM` prompt adapted for node context. Alternatively, un-stub the existing `generate_search_queries()` method once query quality is validated. Note that the `generate_search_queries` LLM call is commented out in `llm.py` — needs to be restored and tested.
+
+**Effort:** S (human: ~1h / CC+gstack: ~5min)
+**Priority:** P3
+**Depends on:** Web Search for Node Expansion PR (this must ship first)
+
 ### Model Selector
 Sonnet vs Haiku
 

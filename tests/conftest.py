@@ -52,10 +52,11 @@ class MockLLMClient:
         self._detail = detail
         self.generate_graph_calls: int = 0
         self.generate_search_queries_calls: int = 0
-        self.expand_node_calls: int = 0
+        self.expand_node_pipeline_calls: int = 0
         self.get_node_detail_calls: int = 0
         self.last_search_context: list[SearchResult] = []
         self.last_research_overview: str | None = None
+        self.last_expansion_search_context: list[SearchResult] = []
 
     async def generate_search_queries(self, topic: str) -> list[str]:
         self.generate_search_queries_calls += 1
@@ -73,13 +74,16 @@ class MockLLMClient:
         self.last_research_overview = research_overview
         return self._graph
 
-    async def expand_node(
+    async def expand_node_pipeline(
         self,
         node_label: str,
-        node_type: NodeType,
+        seed_nodes,
         context_nodes: list[str],
+        search_context: list[SearchResult] | None = None,
+        max_new: int = 10,
     ) -> SubGraphResponse:
-        self.expand_node_calls += 1
+        self.expand_node_pipeline_calls += 1
+        self.last_expansion_search_context = search_context or []
         return self._subgraph
 
     async def get_node_detail(

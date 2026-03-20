@@ -303,6 +303,58 @@ class TestEnrichGraph:
         assert result.nodes[0].source_urls == []
 
 
+# ── _survey_expansion ─────────────────────────────────────────────────────────
+
+
+# Minimal survey output: one new entity
+_EXPANSION_SURVEY_PAYLOAD = {"nodes": [_SAMPLE_NODE]}
+
+
+class TestExpansionSurvey:
+    async def test_survey_expansion_includes_source_context_in_prompt(self):
+        """search_context is formatted and injected into the [SOURCE_CONTEXT] block."""
+        from charlotte_knowledge_graph_generator.models import GraphNode
+        search_results = [
+            SearchResult(title="T1", url="https://example.com/1", snippet="unique snippet text")
+        ]
+        sdk = MagicMock()
+        sdk.messages = MagicMock()
+        sdk.messages.create = AsyncMock(
+            return_value=_make_tool_response("create_expansion_entities", _EXPANSION_SURVEY_PAYLOAD)
+        )
+        client = AnthropicLLMClient(client=sdk, model="claude-test")
+        seed = [GraphNode(id="n1", label="Seed Node", type=NodeType.CONCEPT, description="seed")]
+        await client._survey_expansion(
+            node_label="Oslo Accords",
+            seed_nodes=seed,
+            context_nodes=[],
+            search_context=search_results,
+        )
+        call_kwargs = sdk.messages.create.call_args.kwargs
+        user_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
+        assert "[SOURCE_CONTEXT]" in user_message
+        assert "unique snippet text" in user_message
+
+    async def test_survey_expansion_includes_seed_node_names(self):
+        """Seed nodes are listed in the prompt so the LLM doesn't re-generate them."""
+        from charlotte_knowledge_graph_generator.models import GraphNode
+        sdk = MagicMock()
+        sdk.messages = MagicMock()
+        sdk.messages.create = AsyncMock(
+            return_value=_make_tool_response("create_expansion_entities", _EXPANSION_SURVEY_PAYLOAD)
+        )
+        client = AnthropicLLMClient(client=sdk, model="claude-test")
+        seed = [GraphNode(id="n1", label="Yasser Arafat", type=NodeType.PERSON, description="PLO leader")]
+        await client._survey_expansion(
+            node_label="Oslo Accords",
+            seed_nodes=seed,
+            context_nodes=[],
+        )
+        call_kwargs = sdk.messages.create.call_args.kwargs
+        user_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
+        assert "Yasser Arafat" in user_message
+
+
 # ── generate_search_queries ───────────────────────────────────────────────────
 
 

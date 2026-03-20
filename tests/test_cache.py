@@ -188,6 +188,23 @@ class TestCacheErrorPaths:
         assert result["status"] == "error"
 
 
+class TestExpansionCache:
+    async def test_get_expansion_miss_returns_none(self, cache: CacheLayer):
+        result = await cache.get_expansion("Unknown Node", "Document", "v1")
+        assert result is None
+
+    async def test_get_set_expansion(self, cache: CacheLayer, subgraph_fixture):
+        await cache.set_expansion(
+            "Oslo Accords", NodeType.DOCUMENT.value, "v1", subgraph_fixture
+        )
+        retrieved = await cache.get_expansion(
+            "Oslo Accords", NodeType.DOCUMENT.value, "v1"
+        )
+        assert retrieved is not None
+        assert len(retrieved.nodes) == len(subgraph_fixture.nodes)
+        assert retrieved.nodes[0].id == subgraph_fixture.nodes[0].id
+
+
 class TestCacheDisabled:
     async def test_get_graph_returns_none_when_disabled(
         self, tmp_path, graph_fixture

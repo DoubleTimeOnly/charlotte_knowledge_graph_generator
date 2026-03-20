@@ -171,22 +171,21 @@ async def expand_node(
     # Expansion does not require the full graph — it only needs context_nodes labels.
     # We return the new sub-graph only; the client merges it.
     try:
-        # Build a stub current_graph just for the merge helper
         from charlotte_knowledge_graph_generator.models import GraphNode
-        stub_graph = GraphResponse(
-            nodes=[GraphNode(id=body.node_id, label=body.node_label, type=body.node_type, description="")],
-            edges=[],
-            topic=body.node_label,
-        )
+        # stub_graph contains seed nodes (origin + neighbors); _merge_graphs treats them as existing
+        stub_nodes = body.seed_nodes if body.seed_nodes else [
+            GraphNode(id=body.node_id, label=body.node_label, type=body.node_type, description="")
+        ]
+        stub_graph = GraphResponse(nodes=stub_nodes, edges=[], topic=body.node_label)
         merged = await service.expand_node(
             node_label=body.node_label,
             node_type=body.node_type,
             context_nodes=body.context_nodes,
             current_graph=stub_graph,
         )
-        # Return only the new nodes/edges the client needs to add
-        existing_id = body.node_id
-        new_nodes = [n for n in merged.nodes if n.id != existing_id]
+        # Return only new nodes (client already has seed nodes) + all new edges
+        seed_ids = {n.id for n in stub_nodes}
+        new_nodes = [n for n in merged.nodes if n.id not in seed_ids]
         return GraphResponse(nodes=new_nodes, edges=merged.edges, topic=body.node_label)
     except LLMRefusalError as exc:
         logger.info("LLM refused expand for node=%r: %s", body.node_label, exc)
