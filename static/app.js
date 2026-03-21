@@ -489,21 +489,12 @@ function renderPanel(d) {
     }
   }
 
-  // Connections — clickable to jump to that node
-  const connList = document.getElementById('connections-list');
+  // Connections — split into Inbound / Outbound subsections
   const connSection = document.getElementById('panel-connections');
-  const conns = buildConnections(d.id);
-  if (conns.length) {
-    connList.innerHTML = '';
-    conns.forEach(c => {
-      const li = document.createElement('li');
-      li.innerHTML =
-        `<span class="conn-dot" style="background:${getNodeColor(c.type)}"></span>` +
-        `<span class="conn-label" title="${escHtml(c.label)}">${escHtml(c.label)}</span>` +
-        `<span class="conn-rel">${escHtml(c.rel)}</span>`;
-      li.addEventListener('click', () => jumpToNode(c.id));
-      connList.appendChild(li);
-    });
+  const { inbound, outbound } = buildConnections(d.id);
+  populateConnList('inbound-list', 'panel-inbound', inbound);
+  populateConnList('outbound-list', 'panel-outbound', outbound);
+  if (inbound.length || outbound.length) {
     connSection.removeAttribute('hidden');
   } else {
     connSection.setAttribute('hidden', '');
@@ -512,21 +503,41 @@ function renderPanel(d) {
   showPanelContent();
 }
 
+function populateConnList(listId, sectionId, items) {
+  const list = document.getElementById(listId);
+  const section = document.getElementById(sectionId);
+  list.innerHTML = '';
+  if (items.length) {
+    items.forEach(c => {
+      const li = document.createElement('li');
+      li.innerHTML =
+        `<span class="conn-dot" style="background:${getNodeColor(c.type)}"></span>` +
+        `<span class="conn-label" title="${escHtml(c.label)}">${escHtml(c.label)}</span>` +
+        `<span class="conn-rel">${escHtml(c.rel)}</span>`;
+      li.addEventListener('click', () => jumpToNode(c.id));
+      list.appendChild(li);
+    });
+    section.removeAttribute('hidden');
+  } else {
+    section.setAttribute('hidden', '');
+  }
+}
+
 function buildConnections(nodeId) {
   const nodeMap = Object.fromEntries(graphData.nodes.map(n => [n.id, n]));
-  const conns = [];
+  const inbound = [], outbound = [];
   graphData.edges.forEach(e => {
     const s = typeof e.source === 'object' ? e.source.id : e.source;
     const t = typeof e.target === 'object' ? e.target.id : e.target;
     if (s === nodeId) {
       const target = nodeMap[t];
-      if (target) conns.push({ id: target.id, label: target.label, type: target.type, rel: e.relationship_type });
+      if (target) outbound.push({ id: target.id, label: target.label, type: target.type, rel: e.relationship_type });
     } else if (t === nodeId) {
       const source = nodeMap[s];
-      if (source) conns.push({ id: source.id, label: source.label, type: source.type, rel: `← ${e.relationship_type}` });
+      if (source) inbound.push({ id: source.id, label: source.label, type: source.type, rel: e.relationship_type });
     }
   });
-  return conns;
+  return { inbound, outbound };
 }
 
 // ── Connection navigation ──────────────────────────────────────────────────────
