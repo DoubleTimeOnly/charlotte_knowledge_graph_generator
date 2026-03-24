@@ -15,7 +15,16 @@ from charlotte_knowledge_graph_generator.models import (
     SearchResult,
     SubGraphResponse,
 )
-from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
+from charlotte_knowledge_graph_generator.sources import (
+    HighlightWithContext,
+    ReadwiseAuthError,
+    ReadwiseBookNotFoundError,
+    ReadwiseNoHighlightsError,
+    ReadwiseResult,
+    ReadwiseSourceBackend,
+    SearchService,
+    TavilyResearchBackend,
+)
 
 
 # ── _with_retry ───────────────────────────────────────────────────────────────
@@ -536,3 +545,139 @@ class TestGenerateGraphWithResearch:
         )
         with pytest.raises(GraphGenerationError):
             await service.generate_graph("topic", depth=2)
+
+
+# ── GraphService + ReadwiseSourceBackend integration ─────────────────────────
+
+
+def _make_readwise_backend_mock(
+    book_id: int = 42,
+    book_title: str = "Thinking, Fast and Slow",
+    highlights: list[HighlightWithContext] | None = None,
+) -> MagicMock:
+    if highlights is None:
+        highlights = [
+            HighlightWithContext(
+                text="System 1 operates automatically and quickly.",
+                context_before="",
+                context_after="",
+            )
+        ]
+    result = ReadwiseResult(book_id=book_id, book_title=book_title, highlights=highlights)
+    mock = MagicMock(spec=ReadwiseSourceBackend)
+    mock.resolve_book_id = AsyncMock(return_value=book_id)
+    mock.fetch = AsyncMock(return_value=result)
+    return mock
+
+
+@pytest.mark.anyio
+class TestGenerateGraphReadwiseMode:
+    async def test_readwise_mode_skips_web_search(
+        self, mock_llm, cache, test_settings
+    ):
+        """Readwise mode must never call the search service."""
+        search_mock = MagicMock(spec=SearchService)
+        search_mock.search = AsyncMock(return_value=[])
+
+        readwise_mock = _make_readwise_backend_mock()
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings,
+            search=search_mock, readwise=readwise_mock,
+        )
+        await service.generate_graph("Thinking, Fast and Slow", depth=2, mode="readwise")
+
+        search_mock.search.assert_not_called()
+        assert mock_llm.generate_graph_from_highlights_calls == 1
+
+    async def test_readwise_mode_uses_resolved_title(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        """resolved_title on the result must match the Readwise book title."""
+        readwise_mock = _make_readwise_backend_mock(book_title="Thinking, Fast and Slow")
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=readwise_mock,
+        )
+        result = await service.generate_graph("42", depth=2, mode="readwise")
+
+        assert result.resolved_title == "Thinking, Fast and Slow"
+
+    async def test_readwise_mode_cache_key_uses_book_id(
+        self, mock_llm, cache, test_settings, graph_fixture
+    ):
+        """Second call with different query form (title vs ID) must hit cache."""
+        readwise_mock = _make_readwise_backend_mock(book_id=42)
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=readwise_mock,
+        )
+        # Warm cache under readwise:42
+        await cache.set_graph("readwise:42", 2, test_settings.prompt_version, graph_fixture)
+
+        # Query by title — resolve_book_id returns 42 → cache hit → no LLM call
+        readwise_mock.fetch = AsyncMock()  # should NOT be called
+        result = await service.generate_graph("Thinking, Fast and Slow", depth=2, mode="readwise")
+
+        readwise_mock.fetch.assert_not_called()
+        assert result.nodes == graph_fixture.nodes
+
+    async def test_readwise_unavailable_returns_422(
+        self, mock_llm, cache, test_settings
+    ):
+        """When no readwise backend is configured, mode=readwise raises LLMRefusalError."""
+        from charlotte_knowledge_graph_generator.llm import LLMRefusalError
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=None,
+        )
+        with pytest.raises(LLMRefusalError):
+            await service.generate_graph("some book", depth=2, mode="readwise")
+
+    async def test_readwise_auth_error_raises_422(
+        self, mock_llm, cache, test_settings
+    ):
+        """ReadwiseAuthError (bad API key) must surface as LLMRefusalError."""
+        from charlotte_knowledge_graph_generator.llm import LLMRefusalError
+
+        readwise_mock = MagicMock(spec=ReadwiseSourceBackend)
+        readwise_mock.resolve_book_id = AsyncMock(side_effect=ReadwiseAuthError("bad key"))
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=readwise_mock,
+        )
+        with pytest.raises(LLMRefusalError):
+            await service.generate_graph("some book", depth=2, mode="readwise")
+
+    async def test_readwise_book_not_found_raises_422(
+        self, mock_llm, cache, test_settings
+    ):
+        """ReadwiseBookNotFoundError must surface as LLMRefusalError."""
+        from charlotte_knowledge_graph_generator.llm import LLMRefusalError
+
+        readwise_mock = MagicMock(spec=ReadwiseSourceBackend)
+        readwise_mock.resolve_book_id = AsyncMock(
+            side_effect=ReadwiseBookNotFoundError("not found")
+        )
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=readwise_mock,
+        )
+        with pytest.raises(LLMRefusalError):
+            await service.generate_graph("Unknown Book", depth=2, mode="readwise")
+
+    async def test_readwise_no_highlights_raises_422(
+        self, mock_llm, cache, test_settings
+    ):
+        """ReadwiseNoHighlightsError must surface as LLMRefusalError."""
+        from charlotte_knowledge_graph_generator.llm import LLMRefusalError
+
+        readwise_mock = MagicMock(spec=ReadwiseSourceBackend)
+        readwise_mock.resolve_book_id = AsyncMock(return_value=42)
+        readwise_mock.fetch = AsyncMock(side_effect=ReadwiseNoHighlightsError("none"))
+
+        service = GraphService(
+            llm=mock_llm, cache=cache, settings=test_settings, readwise=readwise_mock,
+        )
+        with pytest.raises(LLMRefusalError):
+            await service.generate_graph("Some Book", depth=2, mode="readwise")

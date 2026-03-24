@@ -51,7 +51,8 @@ function updateGraphColors() {
 let graphData     = { nodes: [], edges: [], topic: '' };
 let selectedId    = null;
 let searchEnabled = false;
-let researchMode  = false;
+let researchMode  = false;   // true when Tavily Research API is active
+let sourceMode    = 'web_search';  // 'web_search' | 'readwise'
 let expandingId   = null;
 let simulation    = null;
 let svgG          = null;          // zoomable <g> inside <svg>
@@ -663,9 +664,11 @@ async function generateGraph(topic, forceRefresh = false) {
 
   // Stage 0: first stage shown immediately at t=0 depends on active backend
   // Stages advance on a 35s interval to reflect real search+LLM timing (~2-3 min total)
-  const stages = researchMode
-    ? ['Researching topic in depth…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
-    : ['Searching the web…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
+  const stages = sourceMode === 'readwise'
+    ? ['Fetching your highlights…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
+    : researchMode
+      ? ['Researching topic in depth…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…']
+      : ['Searching the web…', 'Surveying entities…', 'Building connections…', 'Validating graph…', 'Finalizing…'];
   let stageIdx = 0;
   let stageTimer = null;
   const stageTextEl = document.getElementById('loading-stage-text');
@@ -683,7 +686,7 @@ async function generateGraph(topic, forceRefresh = false) {
     const res = await fetch('/api/graph', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: topic.trim(), depth: 2, force_refresh: forceRefresh }),
+      body: JSON.stringify({ topic: topic.trim(), depth: 2, force_refresh: forceRefresh, mode: sourceMode }),
     });
 
     if (res.status === 429) {
@@ -709,15 +712,25 @@ async function generateGraph(topic, forceRefresh = false) {
 
     selectedId = null;
     showPanelDefault();
+
+    // Use resolved book title as the displayed topic for Readwise mode
+    const displayTopic = data.resolved_title || topic;
+    if (data.resolved_title) {
+      document.getElementById('top-topic-input').value = data.resolved_title;
+      currentTopic = data.resolved_title;
+    }
+
     renderGraph(data);
     document.getElementById('graph-svg').setAttribute('aria-label',
-      `Knowledge graph: ${topic}, ${data.nodes.length} nodes, ${data.edges.length} connections`);
+      `Knowledge graph: ${displayTopic}, ${data.nodes.length} nodes, ${data.edges.length} connections`);
 
-    // Show info bar with timestamp
+    // Show info bar with timestamp or Readwise provenance
     const infoBar = document.getElementById('graph-info-bar');
     const tsEl = document.getElementById('graph-timestamp');
     if (infoBar && tsEl) {
-      if (data.generated_at) {
+      if (sourceMode === 'readwise' && data.resolved_title) {
+        tsEl.textContent = `Readwise \u2022 ${data.resolved_title}`;
+      } else if (data.generated_at) {
         const d = new Date(data.generated_at);
         tsEl.textContent = `Generated ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
       } else {
@@ -970,4 +983,26 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
     el.querySelector('.search-status-label').textContent = label;
     el.removeAttribute('hidden');
   }
+
+  // Show mode selector only when Readwise is available
+  const modeSelect = document.getElementById('source-mode-select');
+  if (cfg.readwise_available && modeSelect) {
+    modeSelect.removeAttribute('hidden');
+    modeSelect.addEventListener('change', () => {
+      sourceMode = modeSelect.value;
+      _applyModeUX();
+    });
+  }
 }).catch(() => {});
+
+function _applyModeUX() {
+  const input = document.getElementById('home-topic-input');
+  const chips = document.getElementById('example-chips');
+  if (sourceMode === 'readwise') {
+    if (input) input.placeholder = 'Enter Readwise book title or ID…';
+    if (chips) chips.setAttribute('hidden', '');
+  } else {
+    if (input) input.placeholder = 'Ask about anything — conflicts, economics, papers...';
+    if (chips) chips.removeAttribute('hidden');
+  }
+}

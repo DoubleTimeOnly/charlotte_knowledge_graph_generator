@@ -1,9 +1,25 @@
 """GraphService — business logic for knowledge graph generation.
 
 generate_graph() pipeline:
-  topic_str
+  topic_str, mode
       │
       ▼ validate (handled by Pydantic at API layer)
+  mode == "readwise"?
+      │ YES ──────────────────────────────────────────────────────────────────
+      │   ReadwiseSourceBackend.resolve_book_id(topic)  ← cheap, 1 API call
+      │   CacheLayer.get_graph(f"readwise:{book_id}", ...)
+      │   HIT ────────────────────────────────────► return GraphResponse
+      │   MISS
+      │     ReadwiseSourceBackend.fetch(topic)         ← full fetch + context
+      │       ReadwiseAuthError  → re-raise as LLMRefusalError → 422
+      │       ReadwiseBookNotFoundError → 422
+      │       ReadwiseNoHighlightsError → 422
+      │     LLMClient.generate_graph_from_highlights(book_title, highlights)
+      │     attach resolved_title + generated_at
+      │     CacheLayer.set_graph(f"readwise:{book_id}", ...)
+      │     return GraphResponse
+      │
+      ▼ mode == "web_search" (default path)
   force_refresh?
       │ YES → skip cache
       │ NO
@@ -76,7 +92,14 @@ from charlotte_knowledge_graph_generator.models import (
     SearchResult,
     SubGraphResponse,
 )
-from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
+from charlotte_knowledge_graph_generator.sources import (
+    ReadwiseAuthError,
+    ReadwiseBookNotFoundError,
+    ReadwiseNoHighlightsError,
+    ReadwiseSourceBackend,
+    SearchService,
+    TavilyResearchBackend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,16 +158,101 @@ class GraphService:
         settings: Settings,
         search: SearchService | None = None,
         research_backend: TavilyResearchBackend | None = None,
+        readwise: ReadwiseSourceBackend | None = None,
     ) -> None:
         self._llm = llm
         self._cache = cache
         self._settings = settings
         self._search = search
         self._research_backend = research_backend
+        self._readwise = readwise
 
     async def generate_graph(
-        self, topic: str, depth: int, force_refresh: bool = False
+        self, topic: str, depth: int, force_refresh: bool = False, mode: str = "web_search"
     ) -> GraphResponse:
+        if mode == "readwise":
+            return await self._generate_graph_readwise(topic, depth, force_refresh)
+        return await self._generate_graph_web(topic, depth, force_refresh)
+
+    async def _generate_graph_readwise(
+        self, topic: str, depth: int, force_refresh: bool
+    ) -> GraphResponse:
+        """Readwise path: fetch highlights → LLM → cache keyed on resolved book_id."""
+        if self._readwise is None:
+            raise LLMRefusalError("Readwise is not configured (no READWISE_API_KEY)")
+
+        # Step 1: resolve book_id cheaply (1 API call) so we can check the cache
+        try:
+            book_id = await self._readwise.resolve_book_id(topic)
+        except ReadwiseAuthError as exc:
+            raise LLMRefusalError("Invalid Readwise API key") from exc
+        except ReadwiseBookNotFoundError as exc:
+            raise LLMRefusalError(f"Book not found in Readwise: {topic!r}") from exc
+
+        cache_key = f"readwise:{book_id}"
+
+        if not force_refresh:
+            cached = await self._cache.get_graph(cache_key, depth, self._settings.prompt_version)
+            if cached is not None:
+                logger.info("Cache hit for Readwise book_id=%d", book_id)
+                return cached
+
+        logger.info("Cache miss for Readwise book_id=%d — fetching highlights", book_id)
+
+        try:
+            result = await self._readwise.fetch(topic)
+        except ReadwiseAuthError as exc:
+            raise LLMRefusalError("Invalid Readwise API key") from exc
+        except ReadwiseBookNotFoundError as exc:
+            raise LLMRefusalError(f"Book not found in Readwise: {topic!r}") from exc
+        except ReadwiseNoHighlightsError as exc:
+            raise LLMRefusalError(f"No highlights found for this book") from exc
+
+        logger.info(
+            "Readwise fetch: book=%r book_id=%d highlights=%d",
+            result.book_title,
+            result.book_id,
+            len(result.highlights),
+        )
+
+        graph = await _with_retry(
+            self._llm.generate_graph_from_highlights,
+            result.book_title,
+            result.highlights,
+        )
+
+        graph = graph.model_copy(
+            update={
+                "generated_at": datetime.now(UTC),
+                "resolved_title": result.book_title,
+            }
+        )
+
+        # Enforce node cap
+        if len(graph.nodes) > self._settings.max_nodes_per_graph:
+            logger.info(
+                "Trimming Readwise graph from %d to %d nodes",
+                len(graph.nodes),
+                self._settings.max_nodes_per_graph,
+            )
+            allowed_ids = {n.id for n in graph.nodes[: self._settings.max_nodes_per_graph]}
+            graph = graph.model_copy(
+                update={
+                    "nodes": graph.nodes[: self._settings.max_nodes_per_graph],
+                    "edges": [
+                        e for e in graph.edges
+                        if e.source in allowed_ids and e.target in allowed_ids
+                    ],
+                }
+            )
+
+        await self._cache.set_graph(cache_key, depth, self._settings.prompt_version, graph)
+        return graph
+
+    async def _generate_graph_web(
+        self, topic: str, depth: int, force_refresh: bool
+    ) -> GraphResponse:
+        """Web search path (original generate_graph logic)."""
         if not force_refresh:
             cached = await self._cache.get_graph(topic, depth, self._settings.prompt_version)
             if cached is not None:
@@ -182,7 +290,9 @@ class GraphService:
                 logger.error("Search failed for topic=%r: %s", topic, exc)
                 raise GraphGenerationError(f"Search failed for topic {topic!r}") from exc
 
-        graph = await _with_retry(self._llm.generate_graph, topic, depth, search_results, research_overview)
+        graph = await _with_retry(
+            self._llm.generate_graph, topic, depth, search_results, research_overview
+        )
 
         # Attach metadata
         graph = graph.model_copy(

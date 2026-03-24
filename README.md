@@ -2,19 +2,23 @@
 
 Explore any topic as an interactive knowledge graph. Enter a subject and Charlotte generates a graph of key people, events, concepts, organizations, and documents — click any node to learn more or expand it deeper.
 
-Charlotte supports two generation modes depending on which Tavily API key is configured:
+Charlotte supports three generation modes:
 
 - **Web Search** — Charlotte runs targeted Tavily searches before generating, adding source citations to each node
 - **Deep Research** — Charlotte uses Tavily's autonomous Research API to produce a synthesized overview before graph generation, yielding the most accurate and comprehensive results
+- **Readwise** — Charlotte generates the graph from your personal Readwise highlights, using surrounding sentence context to enrich entity relationships without hitting the web
 
-Both initial graph generation and **node expansion** run the same 4-stage pipeline: SURVEY → EDGES → VALIDATE → ENRICH. Expanding a node searches for related content, surveys new entities connected to the selected node and its neighbors, constructs edges, validates graph integrity, and enriches with source attribution.
+Both initial graph generation and **node expansion** run the same 5-stage pipeline: QUERY_GEN → SURVEY → EDGES → VALIDATE → ENRICH. In Readwise mode, SURVEY is replaced by a highlight-aware stage and web search is skipped entirely.
 
 ## Prerequisites
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - An [Anthropic API key](https://console.anthropic.com/)
-- A [Tavily API key](https://tavily.com/) for web search mode, **or** a [Tavily Research API key](https://tavily.com/) for deep research mode (at least one required)
+- At least one of:
+  - A [Tavily API key](https://tavily.com/) for web search mode
+  - A [Tavily Research API key](https://tavily.com/) for deep research mode
+  - A [Readwise API key](https://readwise.io/access_token) for Readwise mode
 
 ## Quickstart
 
@@ -24,15 +28,17 @@ git clone <repo-url>
 cd charlotte_knowledge_graph_generator
 uv sync
 
-# 2. Set your API key
+# 2. Set your API keys
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-# Optionally add TAVILY_RESEARCH_API_KEY for deep research, or TAVILY_API_KEY for web search
+# Add at least one source:
+echo "TAVILY_API_KEY=tvly-..."       >> .env   # web search
+echo "TAVILY_RESEARCH_API_KEY=..."   >> .env   # deep research (optional, takes priority)
+echo "READWISE_API_KEY=..."          >> .env   # Readwise mode
 
 # 3. Start the server
 uv run uvicorn charlotte_knowledge_graph_generator.api:app --reload
 # or to make this accessible to other devices on the same network
 uv run uvicorn charlotte_knowledge_graph_generator.api:app --reload --host 0.0.0.0
-
 
 # 4. Open http://localhost:8000
 ```
@@ -47,6 +53,9 @@ All settings are read from environment variables or a `.env` file in the project
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Claude model to use |
 | `TAVILY_RESEARCH_API_KEY` | *(optional)* | Tavily Research API key — enables deep research mode. Takes priority over `TAVILY_API_KEY` for graph generation. |
 | `TAVILY_API_KEY` | *(optional)* | Tavily search API key — enables web search mode and per-node citations. Used for graph generation when no Research key is set. |
+| `READWISE_API_KEY` | *(optional)* | Readwise API key — enables Readwise mode. Get yours at readwise.io/access_token. |
+| `READWISE_CONTEXT_SENTENCES` | `3` | Sentences of surrounding text fetched before/after each highlight for context |
+| `READWISE_MAX_HIGHLIGHTS` | `100` | Maximum highlights fetched per book (capped to avoid token limits) |
 | `CACHE_DB_PATH` | `cache.db` | SQLite cache file path |
 | `MAX_NODES_PER_GRAPH` | `25` | Node cap for initial graph generation |
 | `MAX_NODES_PER_EXPAND` | `10` | Maximum new nodes added per expansion |
@@ -60,20 +69,32 @@ All settings are read from environment variables or a `.env` file in the project
 
 ## Generation Modes
 
-### Web Search (recommended)
+### Web Search
 
 Set `TAVILY_API_KEY` (without `TAVILY_RESEARCH_API_KEY`). Charlotte generates 2–3 targeted search queries and runs them in parallel via Tavily. Search results are injected as context into the graph generation pipeline, and each node is tagged with the source URLs that informed it — shown as clickable citation links in the side panel.
 
-### Deep Research (WIP)
+### Deep Research
 
 Set `TAVILY_RESEARCH_API_KEY`. When a graph is requested, Charlotte calls Tavily's autonomous Research API, which searches and synthesizes multiple sources into a comprehensive overview (takes 10–60 seconds). This overview is injected into the graph generation pipeline alongside the source URLs, producing the most accurate and up-to-date graphs.
 
 The loading indicator shows "Researching topic in depth…" during the research phase.
 
+### Readwise
 
-### Fallback behaviour
+Set `READWISE_API_KEY`. A **Readwise** option appears in the source mode dropdown next to the search bar.
 
-The graph toolbar shows when a graph was generated and a **↺ Regenerate** button to force a fresh generation and bypass the cache.
+Enter a book title (e.g. *Thinking, Fast and Slow*) or a numeric book ID. Charlotte:
+
+1. Resolves the book ID via the Readwise API (used as the cache key so title and ID queries share the same cached result)
+2. Fetches your highlights for that book, along with up to `READWISE_CONTEXT_SENTENCES` surrounding sentences from the full article text via Readwise Reader
+3. Generates the knowledge graph from the highlights only — entities are seeded exclusively from the passages you marked as important
+4. Uses surrounding context to enrich edge relationships without adding context-only nodes to the graph
+
+The info bar shows "Readwise • [Book Title]" to distinguish Readwise-generated graphs from web-search ones. Web search is never called in this mode.
+
+### Mode selector
+
+The dropdown is hidden until the server confirms which backends are available (via `GET /api/config`). If only one backend is configured, no dropdown is shown — the available mode is used automatically.
 
 ## Development
 
@@ -105,6 +126,7 @@ uv run mypy src/
 |---|---|---|
 | `GET` | `/` | Serves the frontend |
 | `GET` | `/health` | Health check |
+| `GET` | `/api/config` | Returns available source backends (`readwise_available`, etc.) |
 | `POST` | `/api/graph` | Generate a knowledge graph for a topic |
 | `POST` | `/api/expand` | Expand a node with connected entities |
 | `POST` | `/api/node/detail` | Get detailed info for a node |
@@ -112,10 +134,15 @@ uv run mypy src/
 
 ### `POST /api/graph`
 ```json
-{ "topic": "Israel-Palestine conflict", "depth": 2, "force_refresh": false }
+{ "topic": "Israel-Palestine conflict", "depth": 2, "force_refresh": false, "mode": "web_search" }
 ```
 
-`force_refresh: true` bypasses the cache read and regenerates from a fresh web search.
+`mode` is `"web_search"` (default) or `"readwise"`. `force_refresh: true` bypasses the cache and regenerates fresh.
+
+For Readwise mode, `topic` is the book title or numeric book ID:
+```json
+{ "topic": "Thinking, Fast and Slow", "depth": 2, "mode": "readwise" }
+```
 
 ### `POST /api/expand`
 ```json

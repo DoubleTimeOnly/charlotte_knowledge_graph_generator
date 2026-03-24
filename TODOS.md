@@ -97,6 +97,12 @@ See what graphs are already cached
 ### Do store tavily research in db
 * Sometimes the rest of the graph creation fails, so caching helps here
 
+### Check highlights are being pulled properly
+Are they parsed correctly, is the context being pulled correctly
+
+### Improve debugging
+Each time a graph is pulled, save the prompts and outputs that are used into a file for debugging
+
 ## Completed
 
 ### Tavily Web Search + Per-Node Citations

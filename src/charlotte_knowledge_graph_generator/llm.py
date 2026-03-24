@@ -47,12 +47,14 @@ from charlotte_knowledge_graph_generator.prompts import (
     NODE_DETAIL_SYSTEM,
     NODE_DETAIL_USER,
     QUERY_GEN_SYSTEM,
+    READWISE_SURVEY_SYSTEM,
+    READWISE_SURVEY_USER,
     SURVEY_SYSTEM,
     SURVEY_USER,
     VALIDATE_SYSTEM,
     VALIDATE_USER,
 )
-from charlotte_knowledge_graph_generator.sources import SearchService
+from charlotte_knowledge_graph_generator.sources import HighlightWithContext, SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -176,12 +178,41 @@ class LLMClientProtocol(Protocol):
         max_new: int = 10,
     ) -> SubGraphResponse: ...
 
+    async def generate_graph_from_highlights(
+        self,
+        book_title: str,
+        highlights: list[HighlightWithContext],
+    ) -> GraphResponse: ...
+
     async def get_node_detail(
         self,
         label: str,
         node_type: NodeType,
         context_nodes: list[str],
     ) -> NodeDetail: ...
+
+
+def _format_highlights(highlights: list[HighlightWithContext]) -> str:
+    """Format highlights as numbered XML blocks for the READWISE_SURVEY_USER prompt.
+
+    Each block:
+      [N]
+      <context_before>...</context_before>
+      <highlight>...</highlight>
+      <context_after>...</context_after>
+
+    Context tags are omitted when empty to keep the prompt lean.
+    """
+    parts: list[str] = []
+    for i, h in enumerate(highlights, 1):
+        block_lines = [f"[{i}]"]
+        if h.context_before.strip():
+            block_lines.append(f"<context_before>{h.context_before}</context_before>")
+        block_lines.append(f"<highlight>{h.text}</highlight>")
+        if h.context_after.strip():
+            block_lines.append(f"<context_after>{h.context_after}</context_after>")
+        parts.append("\n".join(block_lines))
+    return "\n\n".join(parts)
 
 
 def _extract_tool_input(response: anthropic.types.Message, tool_name: str) -> dict:
@@ -273,6 +304,63 @@ class AnthropicLLMClient:
         logger.info("SURVEY: %d entities identified for topic %r", len(raw.nodes), topic)
         return raw.nodes
 
+    async def generate_graph_from_highlights(
+        self,
+        book_title: str,
+        highlights: list[HighlightWithContext],
+    ) -> GraphResponse:
+        """4-stage pipeline for Readwise mode: READWISE_SURVEY → EDGES → VALIDATE → ENRICH.
+
+        Reuses stages 2-4 unchanged. Stage 1 differs: entities seeded from highlights,
+        context used for enrichment only. search_results=[] so source_urls are empty.
+        """
+        nodes = await self._survey_entities_from_highlights(book_title, highlights)
+        edges = await self._construct_edges(book_title, nodes)
+        issues = await self._validate_graph(nodes, edges)
+        return await self._enrich_graph(book_title, nodes, edges, issues, search_context=[])
+
+    async def _survey_entities_from_highlights(
+        self,
+        book_title: str,
+        highlights: list[HighlightWithContext],
+    ) -> list[_LLMNodeInput]:
+        """Stage 1 (Readwise): identify entities from book highlights + context."""
+        formatted_highlights = _format_highlights(highlights)
+        schema = _LLMSurveyOutput.model_json_schema()
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=4096,
+            system=READWISE_SURVEY_SYSTEM,
+            messages=[
+                {
+                    "role": "user",
+                    "content": READWISE_SURVEY_USER.format(
+                        book_title=book_title,
+                        formatted_highlights=formatted_highlights,
+                    ),
+                }
+            ],
+            tools=[
+                {
+                    "name": "create_node_list",
+                    "description": "Identify the key causal entities from the highlights",
+                    "input_schema": schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": "create_node_list"},
+        )
+        raw_input = _extract_tool_input(response, "create_node_list")
+        try:
+            raw = _LLMSurveyOutput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise GraphGenerationError(
+                f"READWISE SURVEY stage returned invalid schema: {exc}"
+            ) from exc
+        logger.info(
+            "READWISE SURVEY: %d entities identified for book %r", len(raw.nodes), book_title
+        )
+        return raw.nodes
+
     async def _construct_edges(self, topic: str, nodes: list[_LLMNodeInput]) -> list[_LLMEdgeInput]:
         """Stage 2: build directed causal edges between entities."""
         json_nodes = json.dumps(
@@ -300,16 +388,19 @@ class AnthropicLLMClient:
             tool_choice={"type": "tool", "name": "create_edge_list"},
         )
         raw_input = _extract_tool_input(response, "create_edge_list")
-        try:
-            raw = _LLMEdgeListOutput.model_validate(raw_input)
-        except ValidationError as exc:
-            raise GraphGenerationError(f"EDGES stage returned invalid schema: {exc}") from exc
-        if len(raw.edges) < 5:
+        raw_edges: list = raw_input.get("edges", []) if isinstance(raw_input, dict) else []
+        valid_edges: list[_LLMEdgeInput] = []
+        for i, edge_dict in enumerate(raw_edges):
+            try:
+                valid_edges.append(_LLMEdgeInput.model_validate(edge_dict))
+            except ValidationError as exc:
+                logger.warning("EDGES: skipping malformed edge at index %d: %s", i, exc)
+        if len(valid_edges) < 5:
             raise GraphGenerationError(
-                f"EDGES stage returned only {len(raw.edges)} edges (minimum 5 required)"
+                f"EDGES stage returned only {len(valid_edges)} valid edges (minimum 5 required)"
             )
-        logger.info("EDGES: %d edges constructed", len(raw.edges))
-        return raw.edges
+        logger.info("EDGES: %d edges constructed (%d skipped)", len(valid_edges), len(raw_edges) - len(valid_edges))
+        return valid_edges
 
     async def _validate_graph(
         self, nodes: list[_LLMNodeInput], edges: list[_LLMEdgeInput]

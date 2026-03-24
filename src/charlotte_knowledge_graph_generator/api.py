@@ -27,7 +27,11 @@ from charlotte_knowledge_graph_generator.models import (
     NodeDetail,
     NodeDetailRequest,
 )
-from charlotte_knowledge_graph_generator.sources import SearchService, TavilyResearchBackend
+from charlotte_knowledge_graph_generator.sources import (
+    ReadwiseSourceBackend,
+    SearchService,
+    TavilyResearchBackend,
+)
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
@@ -66,9 +70,23 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Tavily search enabled (max_results=%d)", settings.search_max_results_per_query)
 
-    if not research_backend and not search_service:
+    readwise_backend: ReadwiseSourceBackend | None = None
+    if settings.readwise_api_key:
+        readwise_backend = ReadwiseSourceBackend(
+            api_key=settings.readwise_api_key,
+            context_sentences=settings.readwise_context_sentences,
+            max_highlights=settings.readwise_max_highlights,
+        )
+        logger.info(
+            "Readwise source enabled (context_sentences=%d, max_highlights=%d)",
+            settings.readwise_context_sentences,
+            settings.readwise_max_highlights,
+        )
+
+    if not research_backend and not search_service and not readwise_backend:
         raise RuntimeError(
-            "No Tavily API keys configured. Set TAVILY_RESEARCH_API_KEY or TAVILY_API_KEY."
+            "No API keys configured. Set TAVILY_RESEARCH_API_KEY, TAVILY_API_KEY, "
+            "or READWISE_API_KEY."
         )
 
     service = GraphService(
@@ -77,6 +95,7 @@ async def lifespan(app: FastAPI):
         settings=settings,
         search=search_service,
         research_backend=research_backend,
+        readwise=readwise_backend,
     )
 
     app.state.cache = cache
@@ -128,6 +147,7 @@ async def get_config() -> dict:
     return {
         "search_enabled": settings.tavily_api_key is not None,
         "research_mode": settings.tavily_research_api_key is not None,
+        "readwise_available": settings.readwise_api_key is not None,
     }
 
 
@@ -144,7 +164,9 @@ async def generate_graph(
     service: GraphService = Depends(get_service),
 ) -> GraphResponse:
     try:
-        return await service.generate_graph(body.topic, body.depth, force_refresh=body.force_refresh)
+        return await service.generate_graph(
+            body.topic, body.depth, force_refresh=body.force_refresh, mode=body.mode
+        )
     except LLMRefusalError as exc:
         logger.info("LLM refused topic=%r: %s", body.topic, exc)
         raise HTTPException(status_code=422, detail="Topic not supported or too sensitive for graph generation")

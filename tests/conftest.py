@@ -51,12 +51,15 @@ class MockLLMClient:
         self._subgraph = subgraph
         self._detail = detail
         self.generate_graph_calls: int = 0
+        self.generate_graph_from_highlights_calls: int = 0
         self.generate_search_queries_calls: int = 0
         self.expand_node_pipeline_calls: int = 0
         self.get_node_detail_calls: int = 0
         self.last_search_context: list[SearchResult] = []
         self.last_research_overview: str | None = None
         self.last_expansion_search_context: list[SearchResult] = []
+        self.last_highlights: list = []
+        self.last_book_title: str = ""
 
     async def generate_search_queries(self, topic: str) -> list[str]:
         self.generate_search_queries_calls += 1
@@ -72,6 +75,12 @@ class MockLLMClient:
         self.generate_graph_calls += 1
         self.last_search_context = search_context or []
         self.last_research_overview = research_overview
+        return self._graph
+
+    async def generate_graph_from_highlights(self, book_title: str, highlights) -> GraphResponse:
+        self.generate_graph_from_highlights_calls += 1
+        self.last_book_title = book_title
+        self.last_highlights = highlights
         return self._graph
 
     async def expand_node_pipeline(

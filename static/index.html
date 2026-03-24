@@ -28,9 +28,13 @@
         aria-label="Topic"
         autocomplete="off"
       />
+      <select id="source-mode-select" class="source-mode-select" aria-label="Source mode" hidden>
+        <option value="web_search">Web Search</option>
+        <option value="readwise">Readwise</option>
+      </select>
       <button id="home-explore-btn" class="btn-primary">Explore</button>
     </div>
-    <div class="example-chips">
+    <div class="example-chips" id="example-chips">
       <button class="chip" data-topic="Israel-Palestine conflict">Israel–Palestine conflict</button>
       <button class="chip" data-topic="Closing the Strait of Hormuz">Closing the Strait of Hormuz</button>
       <button class="chip" data-topic="Attention Is All You Need">Attention Is All You Need</button>

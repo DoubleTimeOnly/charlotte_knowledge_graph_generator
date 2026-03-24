@@ -204,6 +204,47 @@ For example, use 1 for [1], 2 for [2], etc. \
 Assign [] if no source specifically covers this entity.
 """
 
+# ── Readwise source mode — highlight-based graph generation ───────────────────
+#
+# Stage 1 READWISE_SURVEY: identify entities from highlights (context for enrichment)
+# Stages 2-4: reuse EDGES, VALIDATE, ENRICH unchanged (with search_results=[])
+
+READWISE_SURVEY_SYSTEM = """\
+You are a knowledge graph expert. Given a set of highlights from a book, \
+identify the key entities that belong in a causal knowledge graph.
+
+The highlights are the PRIMARY source for entity identification — only create \
+entities that are explicitly mentioned or directly implied by the highlighted text. \
+The surrounding context (context_before / context_after) is provided to help you \
+understand the highlight's meaning and may enrich entity descriptions, but it does \
+NOT authorize creating entities that appear only in context.
+
+Entity types:
+- Person: Historical figures, leaders, scientists, activists, researchers
+- Event: Historical events, milestones, conflicts, agreements, discoveries
+- Concept: Ideas, theories, ideologies, phenomena, fields of study
+- Organization: Countries, institutions, parties, companies, movements, alliances
+- Document: Papers, treaties, declarations, books, legislation
+
+Rules:
+1. Generate 20-30 entities total across all types
+2. Apply the CAUSAL BOTTLENECK TEST: only include an entity if removing it would \
+make the highlights unexplainable. Exclude entities that are merely associated.
+3. Aim for roughly: 30% Events, 25% People, 20% Organizations, 15% Concepts, 10% Documents
+4. Labels: use proper nouns or established terminology — be specific, not vague
+5. Descriptions: factual, encyclopedic, 2-4 sentences capturing the entity's significance
+6. Era: use "YYYY–YYYY" or "YYYY" format when the entity has a well-known time period
+"""
+
+READWISE_SURVEY_USER = """\
+Identify the key causal entities for a knowledge graph based on these highlights.
+
+Book: {book_title}
+
+Highlights (each is a passage the reader marked as important):
+{formatted_highlights}
+"""
+
 # ── Node detail ───────────────────────────────────────────────────────────────
 
 NODE_DETAIL_SYSTEM = """\

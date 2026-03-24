@@ -49,6 +49,7 @@ class GraphResponse(BaseModel):
     topic: str
     sources: list[SearchResult] = Field(default_factory=list)
     generated_at: datetime | None = None
+    resolved_title: str | None = None  # Set for Readwise mode: the matched book title
 
 
 class SubGraphResponse(BaseModel):
@@ -76,6 +77,7 @@ class GraphRequest(BaseModel):
     topic: str = Field(..., min_length=1, max_length=500)
     depth: int = Field(default=2, ge=1, le=3)
     force_refresh: bool = False
+    mode: Literal["web_search", "readwise"] = "web_search"
 
 
 class ExpandRequest(BaseModel):

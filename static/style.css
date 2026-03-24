@@ -153,6 +153,25 @@ input  { font-family: inherit; }
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ── Mode selector ───────────────────────────────────────────────────────── */
+.source-mode-select {
+  height: 48px;
+  padding: 0 0.75rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.source-mode-select:focus { border-color: var(--accent); }
+.source-mode-select[hidden] { display: none; }
+
 /* ── Search status indicator ─────────────────────────────────────────────── */
 .home-search-status {
   display: flex;
